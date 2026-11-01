@@ -32,14 +32,20 @@ if ! fetch_pnpm 'https://registry.npmmirror.com/pnpm/-/pnpm-12.16.1.tgz'; then
   fetch_pnpm 'https://registry.npmjs.org/pnpm/-/pnpm-12.16.1.tgz' || { echo 'pnpm integrity validation failed' >&2; exit 1; }
 fi
 tar -xzf "$work/pnpm.tgz" -C "$work/pnpm"
-pnpm_cmd=(node "$work/pnpm/package/bin/pnpm.cjs")
+pnpm_cmd=(node "$work/pnpm/package/bin/pnpm.mjs")
 [[ "$("${pnpm_cmd[@]}" --version)" == 12.16.1 ]] || { echo 'unexpected pnpm version' >&2; exit 1; }
 "${pnpm_cmd[@]}" install --frozen-lockfile
 "${pnpm_cmd[@]}" --dir cms install --frozen-lockfile
+"${pnpm_cmd[@]}" build
 "${pnpm_cmd[@]}" test
 "${pnpm_cmd[@]}" check
 "${pnpm_cmd[@]}" type-check
-"${pnpm_cmd[@]}" --dir cms test
-"${pnpm_cmd[@]}" build
-"${pnpm_cmd[@]}" --dir cms build
+# Bootstrap tests require a Git email but never use a real administrator identity.
+# GitHub-hosted checkouts do not have user.email configured by default.
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.email GIT_CONFIG_VALUE_0=ci@example.invalid \
+  "${pnpm_cmd[@]}" --dir cms test
+# Strapi searches parent directories for tsconfig.json. The repository root has
+# Astro's unrelated TypeScript config; reproduce the CMS-only Docker context.
+cp -a cms "$work/cms-build"
+"${pnpm_cmd[@]}" --dir "$work/cms-build" build
 echo 'Hosted source validation passed; exact production images were not built or published.'

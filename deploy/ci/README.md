@@ -40,9 +40,12 @@ SHA-256/SHA-512 values, and only falls back to the official source on download
 or checksum failure while retaining the same version and checksum. It runs the
 source tests, checks and builds; it does not claim to build or attest the exact
 private-registry production images. The Node checksum and pnpm integrity value
-were checked against both domestic and official metadata. Shell syntax and the
-missing-runner-temp guard pass locally; a full GitHub-hosted run and actual
-download/integrity path have not yet been tested. Neither candidate lives in
+were checked against both domestic and official metadata. A full clean local
+checkout simulation with an empty HOME passed the actual mirror downloads,
+integrity checks, source tests, type checks and both production builds. The CMS
+build runs in a separate temporary directory so that Strapi does not pick up
+the root Astro TypeScript configuration. An actual GitHub-hosted run has not
+yet been tested. Neither candidate lives in
 `.github/workflows`, and neither has been activated.
 
 ## Controlled deployment candidate
