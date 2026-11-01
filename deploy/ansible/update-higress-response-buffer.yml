@@ -1,0 +1,50 @@
+---
+- name: Update the reviewed Higress response buffer without changing WAF limits
+  hosts: "{{ shirone_preview_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  vars:
+    apply_buffer: false
+    buffer_uid: c1661060-5ef7-4fa0-b0cd-3b17e3f8dcb0
+    buffer_expected: 4194304
+    buffer_target: 8388608
+    buffer_config: /home/hyperbola/Work/ansible-debian-k8s/group_vars/all/main.yml
+  tasks:
+    - name: Ensure desired value is recorded in Ansible source
+      ansible.builtin.assert:
+        that:
+          - "lookup('file', buffer_config) is search('(?m)^higress_gateway_response_buffer_limit_bytes: 8388608$')"
+          - not (apply_buffer | bool and ansible_check_mode)
+        quiet: true
+    - name: Read the current buffer policy
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, --kubeconfig=/home/hyperbola/.kube/config, -n, higress-system, get, envoyfilter, higress-gateway-response-buffer, -o, json]
+      register: raw
+      changed_when: false
+      check_mode: false
+    - name: Decode the current policy
+      ansible.builtin.set_fact:
+        current: '{{ raw.stdout | from_json }}'
+    - name: Require the reviewed workload and current value
+      ansible.builtin.assert:
+        that:
+          - current.metadata.uid == buffer_uid
+          - current.spec.workloadSelector.labels['ansible.kubernetes.io/higress-gateway'] == 'true'
+          - current.spec.configPatches | length == 1
+          - current.spec.configPatches[0].patch.value.request_body_buffer_limit == buffer_expected
+        quiet: true
+    - name: Construct a guarded patch
+      ansible.builtin.set_fact:
+        patch:
+          - {op: test, path: /metadata/uid, value: '{{ buffer_uid }}'}
+          - {op: test, path: /metadata/resourceVersion, value: '{{ current.metadata.resourceVersion }}'}
+          - {op: test, path: /spec/configPatches/0/patch/value/request_body_buffer_limit, value: '{{ buffer_expected | int }}'}
+          - {op: replace, path: /spec/configPatches/0/patch/value/request_body_buffer_limit, value: '{{ buffer_target | int }}'}
+    - name: Validate the exact patch through admission
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, --kubeconfig=/home/hyperbola/.kube/config, -n, higress-system, patch, envoyfilter, higress-gateway-response-buffer, --type=json, --dry-run=server, -p, '{{ patch | to_json }}', -o, name]
+      changed_when: false
+      check_mode: false
+    - name: Apply the guarded patch
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, --kubeconfig=/home/hyperbola/.kube/config, -n, higress-system, patch, envoyfilter, higress-gateway-response-buffer, --type=json, -p, '{{ patch | to_json }}', -o, name]
+      when: apply_buffer | bool
