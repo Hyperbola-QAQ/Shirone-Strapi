@@ -1,0 +1,70 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shirone-ipv4-gateway-ingress
+  namespace: higress-system
+  labels: {app.kubernetes.io/part-of: shirone-strapi}
+spec:
+  podSelector: {matchLabels: {app: shirone-ipv4-higress}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ipBlock: {cidr: 192.168.86.11/32}}]
+      ports: [{protocol: TCP, port: 8443}]
+    - from: [{ipBlock: {cidr: 192.168.86.11/32}}, {ipBlock: {cidr: 192.168.86.21/32}}]
+      ports: [{protocol: TCP, port: 15021}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shirone-cms-ipv4-gateway-ingress
+  namespace: mizuki
+  labels: {app.kubernetes.io/part-of: shirone-strapi}
+spec:
+  podSelector: {matchLabels: {app: shirone-cms}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: higress-system}}
+          podSelector: {matchLabels: {app: shirone-ipv4-higress}}
+      ports: [{protocol: TCP, port: 1337}]
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: shirone-ipv4-proxy-protocol
+  namespace: higress-system
+  labels: {app.kubernetes.io/part-of: shirone-strapi}
+spec:
+  workloadSelector:
+    labels: {app: shirone-ipv4-higress}
+  configPatches:
+    - applyTo: LISTENER_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          portNumber: 8443
+          listenerFilter: envoy.filters.listener.tls_inspector
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.listener.proxy_protocol
+          typed_config:
+            '@type': type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol
+---
+# The WAF buffers response bodies. Match the production gateway's 8 MiB
+# limit, but apply it only to this independent gateway workload.
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: shirone-ipv4-response-buffer
+  namespace: higress-system
+  labels: {app.kubernetes.io/part-of: shirone-strapi}
+spec:
+  workloadSelector:
+    labels: {app: shirone-ipv4-higress}
+  configPatches:
+    - applyTo: VIRTUAL_HOST
+      match: {context: GATEWAY}
+      patch:
+        operation: MERGE
+        value: {request_body_buffer_limit: 8388608}

@@ -1,0 +1,179 @@
+---
+# Read-only by default. Inventory must define verified aliases txy and imini.
+- name: Verify the dedicated gateway before any public edge change
+  hosts: imini
+  gather_facts: false
+  vars:
+    edge_apply: false
+    edge_gateway_uid: ''
+    edge_gateway_ip: ''
+  tasks:
+    - name: Require explicit reviewed gateway identity before applying
+      ansible.builtin.assert:
+        that:
+          - not (edge_apply | bool) or (edge_gateway_uid | length > 0 and edge_gateway_ip | length > 0)
+          - not (edge_apply | bool and ansible_check_mode)
+        quiet: true
+    - name: Read the dedicated gateway Service
+      ansible.builtin.command:
+        argv: [kubectl, --kubeconfig=/home/hyperbola/.kube/config, -n, higress-system, get, service, shirone-ipv4-gateway, -o, json]
+      register: gateway_raw
+      changed_when: false
+      when: edge_apply | bool
+    - name: Check the expected service identity and target
+      ansible.builtin.assert:
+        that:
+          - (gateway_raw.stdout | from_json).metadata.uid == edge_gateway_uid
+          - (gateway_raw.stdout | from_json).spec.clusterIP == edge_gateway_ip
+          - "(gateway_raw.stdout | from_json).spec.selector == {'app': 'shirone-ipv4-higress'}"
+          - (gateway_raw.stdout | from_json).spec.ports | selectattr('port', 'equalto', 8443) | list | length == 1
+        quiet: true
+      when: edge_apply | bool
+    - name: Verify the dedicated tunnel service is active
+      ansible.builtin.command: systemctl --user is-active shirone-ipv4-tunnel.service
+      environment: {XDG_RUNTIME_DIR: /run/user/1000}
+      changed_when: false
+      when: edge_apply | bool
+    - name: Inspect the active tunnel command
+      ansible.builtin.command: systemctl --user show shirone-ipv4-tunnel.service --property=ExecStart --value
+      environment: {XDG_RUNTIME_DIR: /run/user/1000}
+      register: edge_tunnel_command
+      changed_when: false
+      when: edge_apply | bool
+    - name: Require the tunnel target to match the reviewed Service
+      ansible.builtin.assert:
+        that:
+          - "(' -R 127.0.0.1:25443:' ~ edge_gateway_ip ~ ':8443 ') in edge_tunnel_command.stdout"
+          - "'StrictHostKeyChecking=yes' in edge_tunnel_command.stdout"
+          - "'shirone-tunnel@txy.hyperbola.cc' in edge_tunnel_command.stdout"
+        quiet: true
+      when: edge_apply | bool
+
+- name: Inspect and optionally switch only the reviewed HAProxy configuration
+  hosts: txy
+  gather_facts: false
+  become: true
+  vars:
+    edge_apply: false
+    edge_path: /etc/haproxy/k3s-edge.cfg
+    edge_baseline_sha256: 36498e09ef0ff351087dbfcfa57f1b54c5347a5b0b5ece4c051204a3f1d1033c
+    shirone_edge_bind_address: 0.0.0.0
+    shirone_edge_http_port: 80
+    shirone_edge_https_port: 443
+    shirone_edge_traefik_address: 10.0.0.30
+    shirone_edge_traefik_http_port: 30486
+    shirone_edge_traefik_https_port: 31908
+    shirone_edge_tunnel_port: 25443
+    shirone_edge_send_proxy: true
+  tasks:
+    - name: Require the reviewed host and safe check mode
+      ansible.builtin.command: hostname
+      register: edge_hostname
+      changed_when: false
+      check_mode: false
+    - name: Check host identity
+      ansible.builtin.assert:
+        that:
+          - edge_hostname.stdout | lower == 'hyqaq-txy'
+          - not (edge_apply | bool and ansible_check_mode)
+          - (ansible_ssh_common_args | default('')) is not search('StrictHostKeyChecking=no')
+        quiet: true
+    - name: Load the reviewed original and candidate
+      ansible.builtin.set_fact:
+        edge_original: "{{ lookup('file', 'haproxy-edge-before.cfg') }}\n"
+        edge_candidate: "{{ lookup('template', 'haproxy-sni.cfg.j2') }}"
+    - name: Check exact saved baseline
+      ansible.builtin.assert:
+        that: [(edge_original | hash('sha256')) == edge_baseline_sha256]
+        quiet: true
+    - name: Read the current edge file checksum
+      ansible.builtin.stat:
+        path: '{{ edge_path }}'
+        checksum_algorithm: sha256
+      register: edge_live
+    - name: Reject unexpected changes by another operator
+      ansible.builtin.assert:
+        that:
+          - edge_live.stat.isreg | default(false)
+          - edge_live.stat.uid == 0
+          - edge_live.stat.checksum in [edge_baseline_sha256, edge_candidate | hash('sha256')]
+        quiet: true
+    - name: Validate candidate through the installed HAProxy binary
+      ansible.builtin.command:
+        argv: [/usr/sbin/haproxy, -c, -f, /dev/stdin]
+        stdin: '{{ edge_candidate }}'
+      changed_when: false
+      check_mode: false
+    - name: Capture the existing unrelated site's response
+      ansible.builtin.command:
+        argv: [curl, --noproxy, '*', --silent, --show-error, --connect-timeout, '5', --max-time, '10', --output, /dev/null, --write-out, '%{http_code}', --resolve, 'twikoo.hyperbola.cc:443:127.0.0.1', 'https://twikoo.hyperbola.cc/']
+      register: edge_other_before
+      changed_when: false
+      check_mode: false
+      when: edge_apply | bool
+    - name: Verify the dedicated tunnel with PROXY v2 and authenticated TLS
+      ansible.builtin.command:
+        argv: [python3, '-', '{{ item.host }}', '{{ item.path }}']
+        stdin: "{{ lookup('file', 'tunnel-probe.py') }}"
+      loop:
+        - {host: hyperbola.cc, path: /}
+        - {host: strapi.hyperbola.cc, path: /admin}
+      changed_when: false
+      when: edge_apply | bool
+    - name: Switch and verify the edge with automatic restoration on failure
+      when: edge_apply | bool
+      block:
+        - name: Install only the verified candidate
+          ansible.builtin.copy:
+            dest: '{{ edge_path }}'
+            content: '{{ edge_candidate }}'
+            owner: root
+            group: root
+            mode: '0644'
+            validate: '/usr/sbin/haproxy -c -f %s'
+          register: edge_write
+        - name: Reload the dedicated edge service
+          ansible.builtin.systemd:
+            name: haproxy-k3s-edge.service
+            state: reloaded
+          when: edge_write.changed
+        - name: Verify both TLS entrypoints via IPv4 loopback
+          ansible.builtin.command:
+            argv: [curl, --noproxy, '*', --silent, --show-error, --fail, --connect-timeout, '5', --max-time, '15', --output, /dev/null, --write-out, '%{http_code}', --resolve, '{{ item.host }}:443:127.0.0.1', 'https://{{ item.host }}{{ item.path }}']
+          loop:
+            - {host: hyperbola.cc, path: /}
+            - {host: strapi.hyperbola.cc, path: /admin}
+          register: edge_public_probe
+          changed_when: false
+          failed_when: edge_public_probe.rc != 0 or edge_public_probe.stdout != '200'
+        - name: Verify the unrelated site's response is unchanged
+          ansible.builtin.command:
+            argv: [curl, --noproxy, '*', --silent, --show-error, --connect-timeout, '5', --max-time, '10', --output, /dev/null, --write-out, '%{http_code}', --resolve, 'twikoo.hyperbola.cc:443:127.0.0.1', 'https://twikoo.hyperbola.cc/']
+          register: edge_other_after
+          changed_when: false
+          failed_when: edge_other_after.stdout != edge_other_before.stdout
+      rescue:
+        - name: Read current edge checksum before any automatic restoration
+          ansible.builtin.stat:
+            path: '{{ edge_path }}'
+            checksum_algorithm: sha256
+          register: edge_failed
+        - name: Refuse to overwrite a concurrent operator change
+          ansible.builtin.assert:
+            that: [edge_failed.stat.checksum == (edge_candidate | hash('sha256'))]
+            quiet: true
+        - name: Restore the exact reviewed original
+          ansible.builtin.copy:
+            dest: '{{ edge_path }}'
+            content: '{{ edge_original }}'
+            owner: root
+            group: root
+            mode: '0644'
+            validate: '/usr/sbin/haproxy -c -f %s'
+        - name: Reload the original edge configuration
+          ansible.builtin.systemd:
+            name: haproxy-k3s-edge.service
+            state: reloaded
+        - name: Report the failed switch
+          ansible.builtin.fail:
+            msg: 'Edge verification failed; the reviewed original configuration was restored.'

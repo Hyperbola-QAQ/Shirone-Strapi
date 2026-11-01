@@ -1,0 +1,120 @@
+---
+# Create-only. Run against the reviewed cluster control plane. Preview is default.
+- name: Review or create the independent Shirone IPv4 Gateway
+  hosts: "{{ shirone_preview_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  become: false
+  serial: 1
+  vars:
+    shirone_kubeconfig: /home/hyperbola/.kube/config
+    shirone_gateway_source_uid: ''
+    shirone_gateway_source_image: ''
+    shirone_gateway_apply: false
+    shirone_gateway_root: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/ansible/shirone-ipv4/isolated-gateway"
+  tasks:
+    - name: Require explicit reviewed source and live mode for mutation
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - shirone_gateway_source_uid is match('^[a-f0-9-]{36}$')
+          - shirone_gateway_source_image is match('^192\\.168\\.86\\.100:30500/ca-clean/gateway@sha256:[a-f0-9]{64}$')
+          - not (shirone_gateway_apply | bool and ansible_check_mode)
+        quiet: true
+    - name: Read namespace identities
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, '--kubeconfig={{ shirone_kubeconfig }}', get, namespace, '{{ item.name }}', -o, 'jsonpath={.metadata.uid}']
+      loop:
+        - {name: higress-system, uid: f7aab768-12f8-46da-8369-3362a3c7350c}
+        - {name: mizuki, uid: 4c0430e0-23fe-4cbc-8795-2e2fee490b39}
+      register: namespaces
+      changed_when: false
+      check_mode: false
+    - name: Refuse another cluster
+      ansible.builtin.assert:
+        that: [item.stdout == item.item.uid]
+        quiet: true
+      loop: '{{ namespaces.results }}'
+    - name: Read reviewed existing Gateway Deployment
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, '--kubeconfig={{ shirone_kubeconfig }}', -n, higress-system, get, deployment, higress-gateway, -o, json]
+      register: source
+      changed_when: false
+      check_mode: false
+      no_log: true
+    - name: Render the independent non-host-network Deployment
+      ansible.builtin.command:
+        argv: [python3, '{{ shirone_gateway_root }}/render-deployment.py', '{{ shirone_gateway_source_uid }}', '{{ shirone_gateway_source_image }}']
+        stdin: '{{ source.stdout }}'
+      delegate_to: localhost
+      register: deployment
+      changed_when: false
+      check_mode: false
+      no_log: true
+    - name: Assemble the exact reviewed resources in safe order
+      ansible.builtin.set_fact:
+        objects: "{{ (lookup('file', shirone_gateway_root + '/policies.yaml') | from_yaml_all | list) + (lookup('file', shirone_gateway_root + '/gateway.yaml') | from_yaml_all | list) + [lookup('file', shirone_gateway_root + '/admin-route.yaml') | from_yaml] + [deployment.stdout | from_json] }}"
+      no_log: true
+    - name: Require all candidate names to be absent
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, '--kubeconfig={{ shirone_kubeconfig }}', -n, '{{ item.metadata.namespace }}', get, '{{ item.kind }}', '{{ item.metadata.name }}', --ignore-not-found, -o, name]
+      loop: '{{ objects }}'
+      loop_control: {label: '{{ item.kind }}/{{ item.metadata.name }}'}
+      register: existing
+      changed_when: false
+      check_mode: false
+    - name: Do not adopt or overwrite any existing resource
+      ansible.builtin.assert:
+        that: [item.stdout | length == 0]
+        quiet: true
+      loop: '{{ existing.results }}'
+      loop_control: {label: '{{ item.item.kind }}/{{ item.item.metadata.name }}'}
+    - name: Validate each candidate through API server admission
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, '--kubeconfig={{ shirone_kubeconfig }}', create, --dry-run=server, -f, '-', -o, name]
+        stdin: '{{ item | to_json }}'
+      loop: '{{ objects }}'
+      loop_control: {label: '{{ item.kind }}/{{ item.metadata.name }}'}
+      changed_when: false
+      check_mode: false
+    - name: Create reviewed candidates and record their identities even on partial failure
+      when: shirone_gateway_apply | bool
+      block:
+        - name: Create only the reviewed candidates
+          ansible.builtin.command:
+            argv: [kubectl, --request-timeout=15s, '--kubeconfig={{ shirone_kubeconfig }}', create, -f, '-', -o, name]
+            stdin: '{{ item | to_json }}'
+          loop: '{{ objects }}'
+          loop_control: {label: '{{ item.kind }}/{{ item.metadata.name }}'}
+      rescue:
+        - name: Record that creation requires reconciliation
+          ansible.builtin.set_fact: {shirone_create_failed: true}
+      always:
+        - name: Read exact candidate identities after the attempt
+          ansible.builtin.command:
+            argv: [kubectl, --request-timeout=15s, '--kubeconfig={{ shirone_kubeconfig }}', -n, '{{ item.metadata.namespace }}', get, '{{ item.kind }}', '{{ item.metadata.name }}', --ignore-not-found, -o, json]
+          loop: '{{ objects }}'
+          loop_control: {label: '{{ item.kind }}/{{ item.metadata.name }}'}
+          register: receipts
+          changed_when: false
+          failed_when: false
+          no_log: true
+        - name: Report UID and ownership for later guarded rollback
+          ansible.builtin.debug:
+            msg:
+              resource: '{{ item.item.metadata.namespace }}/{{ item.item.kind }}/{{ item.item.metadata.name }}'
+              uid: "{{ (item.stdout | from_json).metadata.uid if item.rc == 0 and item.stdout | length > 0 else 'NOT_FOUND_OR_UNKNOWN' }}"
+              owned: "{{ (item.stdout | from_json).metadata.labels.get('app.kubernetes.io/part-of', '') == 'shirone-strapi' if item.rc == 0 and item.stdout | length > 0 else false }}"
+          loop: '{{ receipts.results }}'
+          loop_control: {label: '{{ item.item.kind }}/{{ item.item.metadata.name }}'}
+        - name: Hold after an uncertain or partially failed create
+          ansible.builtin.fail:
+            msg: 'Partial create or uncertain receipt: reconcile the reported identities; do not blindly rerun.'
+          when: (shirone_create_failed | default(false)) or (receipts.results | selectattr('rc', 'ne', 0) | list | length > 0)
+        - name: Require every expected object and its ownership marker
+          ansible.builtin.assert:
+            that:
+              - "item.stdout | length > 0 and (item.stdout | from_json).metadata.labels.get('app.kubernetes.io/part-of', '') == 'shirone-strapi'"
+            fail_msg: 'An object is missing or unmanaged; reconcile the reported identities.'
+            quiet: true
+          loop: '{{ receipts.results }}'
+          loop_control: {label: '{{ item.item.kind }}/{{ item.item.metadata.name }}'}

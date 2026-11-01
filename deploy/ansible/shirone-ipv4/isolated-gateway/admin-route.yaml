@@ -1,0 +1,64 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: shirone-ipv4-admin
+  namespace: mizuki
+  labels:
+    app.kubernetes.io/part-of: shirone-strapi
+spec:
+  hostnames:
+  - strapi.hyperbola.cc
+  parentRefs:
+  - name: shirone-ipv4
+    namespace: higress-system
+    sectionName: admin
+  rules:
+  - matches:
+    - path:
+        type: Exact
+        value: /
+    filters:
+    - type: RequestRedirect
+      requestRedirect:
+        path:
+          type: ReplaceFullPath
+          replaceFullPath: /admin
+        statusCode: 302
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /admin
+    - path:
+        type: PathPrefix
+        value: /content-manager
+    - path:
+        type: PathPrefix
+        value: /content-type-builder
+    - path:
+        type: PathPrefix
+        value: /content-releases
+    - path:
+        type: PathPrefix
+        value: /review-workflows
+    - path:
+        type: PathPrefix
+        value: /upload
+    - path:
+        type: PathPrefix
+        value: /i18n
+    - path:
+        type: PathPrefix
+        value: /email
+    - path:
+        type: PathPrefix
+        value: /users-permissions
+    backendRefs:
+    - name: shirone-cms
+      port: 1337
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: shirone-ssr
+      port: 80

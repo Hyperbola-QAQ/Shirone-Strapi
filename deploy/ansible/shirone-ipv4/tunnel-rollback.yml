@@ -1,0 +1,116 @@
+---
+# Explicit rollback removes only owned tunnel service and SSH Match block.
+# The origin's private key and verified known_hosts are intentionally retained.
+- name: Stop the managed reverse connection
+  hosts: imini
+  gather_facts: false
+  vars:
+    tunnel_remove: false
+    tunnel_dir: /home/hyperbola/.local/share/shirone-ipv4-tunnel
+  tasks:
+    - name: Require explicit rollback and live mode
+      ansible.builtin.assert:
+        that: [tunnel_remove | bool, not ansible_check_mode]
+        quiet: true
+    - name: Read the owned origin marker
+      ansible.builtin.slurp:
+        src: '{{ tunnel_dir }}/owner'
+      register: owner
+    - name: Require the expected owner marker
+      ansible.builtin.assert:
+        that: [(owner.content | b64decode | trim) == 'shirone-ipv4-tunnel-v1']
+        quiet: true
+    - name: Stop and disable only the dedicated user unit
+      ansible.builtin.systemd:
+        scope: user
+        name: shirone-ipv4-tunnel.service
+        enabled: false
+        state: stopped
+      environment:
+        XDG_RUNTIME_DIR: /run/user/1000
+    - name: Remove the dedicated user unit
+      ansible.builtin.file:
+        path: /home/hyperbola/.config/systemd/user/shirone-ipv4-tunnel.service
+        state: absent
+    - name: Reload user service manager
+      ansible.builtin.systemd:
+        scope: user
+        daemon_reload: true
+      environment:
+        XDG_RUNTIME_DIR: /run/user/1000
+
+- name: Remove the owned edge tunnel account and SSH restriction
+  hosts: txy
+  gather_facts: false
+  become: true
+  vars:
+    tunnel_remove: false
+  tasks:
+    - name: Require explicit rollback and live mode
+      ansible.builtin.assert:
+        that: [tunnel_remove | bool, not ansible_check_mode]
+        quiet: true
+    - name: Check the edge host identity
+      ansible.builtin.command: hostname
+      register: edge
+      changed_when: false
+    - name: Require the intended edge host
+      ansible.builtin.assert:
+        that: [edge.stdout | lower == 'hyqaq-txy']
+        quiet: true
+    - name: Read owned edge marker
+      ansible.builtin.slurp:
+        src: /etc/ssh/shirone-ipv4/owner
+      register: owner
+    - name: Require the expected edge ownership
+      ansible.builtin.assert:
+        that: [(owner.content | b64decode | trim) == 'shirone-ipv4-tunnel-v1']
+        quiet: true
+    - name: Inspect dedicated account
+      ansible.builtin.command: getent passwd shirone-tunnel
+      register: identity
+      changed_when: false
+    - name: Require the expected non-login account
+      ansible.builtin.assert:
+        that:
+          - "identity.stdout.split(':')[-1] == '/usr/sbin/nologin'"
+        quiet: true
+    - name: Record existing operator effective settings
+      ansible.builtin.command: /usr/sbin/sshd -T -C user=hyperbola,host=localhost,addr=127.0.0.1
+      register: before
+      changed_when: false
+    - name: Remove only the marked SSH Match block
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: '# {mark} SHIRONE IPV4 TUNNEL (managed by Ansible)'
+        state: absent
+        validate: /usr/sbin/sshd -t -f %s
+      register: config
+    - name: Check existing operator effective settings after removal
+      ansible.builtin.command: /usr/sbin/sshd -T -C user=hyperbola,host=localhost,addr=127.0.0.1
+      register: after
+      changed_when: false
+    - name: Require existing operator settings to remain unchanged
+      ansible.builtin.assert:
+        that: [before.stdout == after.stdout]
+        quiet: true
+    - name: Reload the SSH server
+      ansible.builtin.systemd:
+        name: ssh.service
+        state: reloaded
+      when: config.changed
+    - name: Remove the managed account without touching its home
+      ansible.builtin.user:
+        name: shirone-tunnel
+        state: absent
+        remove: false
+    - name: Remove the dedicated authorized key and ownership marker
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: absent
+      loop:
+        - /etc/ssh/shirone-ipv4/authorized_keys
+        - /etc/ssh/shirone-ipv4/owner
+    - name: Remove the dedicated directory only if empty
+      ansible.builtin.command: rmdir /etc/ssh/shirone-ipv4
+      changed_when: true

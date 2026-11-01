@@ -1,0 +1,66 @@
+---
+# Explicit rollback; all supplied UIDs must be copied from reviewed create receipts.
+- name: Remove only the exact reviewed independent IPv4 Gateway objects
+  hosts: "{{ shirone_preview_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  become: false
+  serial: 1
+  vars:
+    shirone_gateway_remove: false
+    shirone_gateway_uids: {}
+    shirone_gateway_root: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/ansible/shirone-ipv4/isolated-gateway"
+    resources:
+      - [higress-system, deployment, shirone-ipv4-gateway]
+      - [mizuki, httproute, shirone-ipv4-admin]
+      - [mizuki, httproute, shirone-ipv4-site]
+      - [higress-system, gateway, shirone-ipv4]
+      - [higress-system, service, shirone-ipv4-gateway]
+      - [higress-system, envoyfilter, shirone-ipv4-proxy-protocol]
+      - [higress-system, envoyfilter, shirone-ipv4-response-buffer]
+      - [higress-system, networkpolicy, shirone-ipv4-gateway-ingress]
+      - [mizuki, networkpolicy, shirone-cms-ipv4-gateway-ingress]
+  tasks:
+    - name: Require explicit rollback and only reviewed resource names
+      ansible.builtin.assert:
+        that:
+          - shirone_gateway_remove | bool
+          - not ansible_check_mode
+          - lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - shirone_gateway_uids is mapping
+          - shirone_gateway_uids | length > 0
+          - shirone_gateway_uids.keys() | list | difference(resources | map('join', '/') | list) | length == 0
+        quiet: true
+    - name: Validate every UID before removing anything
+      ansible.builtin.assert:
+        that:
+          - item | join('/') in shirone_gateway_uids
+          - shirone_gateway_uids[item | join('/')] is match('^[a-f0-9-]{36}$')
+        quiet: true
+      loop: '{{ resources }}'
+      loop_control: {label: "{{ item | join('/') }}"}
+      when: item | join('/') in shirone_gateway_uids
+    - name: Read every candidate before removing anything
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, '--kubeconfig=/home/hyperbola/.kube/config', -n, '{{ item[0] }}', get, '{{ item[1] }}', '{{ item[2] }}', -o, json]
+      loop: '{{ resources }}'
+      loop_control: {label: "{{ item | join('/') }}"}
+      register: live
+      changed_when: false
+      no_log: true
+      when: item | join('/') in shirone_gateway_uids
+    - name: Refuse mismatched or unmanaged objects before removing anything
+      ansible.builtin.assert:
+        that:
+          - (item.stdout | from_json).metadata.uid == shirone_gateway_uids[item.item | join('/')]
+          - (item.stdout | from_json).metadata.labels.get('app.kubernetes.io/part-of', '') == 'shirone-strapi'
+        quiet: true
+      loop: '{{ live.results }}'
+      loop_control: {label: "{{ item.item | join('/') }}"}
+      when: not (item.skipped | default(false))
+    - name: Delete exact owned resources using Kubernetes UID preconditions
+      ansible.builtin.command:
+        argv: [python3, '-', '{{ item[0] }}', '{{ item[1] }}', '{{ item[2] }}', "{{ shirone_gateway_uids[item | join('/')] }}"]
+        stdin: "{{ lookup('file', shirone_gateway_root + '/delete-owned.py') }}"
+      loop: '{{ resources }}'
+      loop_control: {label: "{{ item | join('/') }}"}
+      when: item | join('/') in shirone_gateway_uids

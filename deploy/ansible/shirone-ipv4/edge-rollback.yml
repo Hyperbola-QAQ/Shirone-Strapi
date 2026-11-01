@@ -1,0 +1,60 @@
+---
+- name: Restore only the reviewed HAProxy edge configuration
+  hosts: txy
+  gather_facts: false
+  become: true
+  vars:
+    edge_rollback: false
+    edge_path: /etc/haproxy/k3s-edge.cfg
+    edge_baseline_sha256: 36498e09ef0ff351087dbfcfa57f1b54c5347a5b0b5ece4c051204a3f1d1033c
+    shirone_edge_bind_address: 0.0.0.0
+    shirone_edge_http_port: 80
+    shirone_edge_https_port: 443
+    shirone_edge_traefik_address: 10.0.0.30
+    shirone_edge_traefik_http_port: 30486
+    shirone_edge_traefik_https_port: 31908
+    shirone_edge_tunnel_port: 25443
+    shirone_edge_send_proxy: true
+  tasks:
+    - name: Identify the edge host
+      ansible.builtin.command: hostname
+      register: edge_hostname
+      changed_when: false
+    - name: Require an explicit rollback on the reviewed host
+      ansible.builtin.assert:
+        that: [edge_rollback | bool, not ansible_check_mode, edge_hostname.stdout | lower == 'hyqaq-txy']
+        quiet: true
+    - name: Read the reviewed configurations
+      ansible.builtin.set_fact:
+        edge_original: "{{ lookup('file', 'haproxy-edge-before.cfg') }}\n"
+        edge_candidate: "{{ lookup('template', 'haproxy-sni.cfg.j2') }}"
+    - name: Read current configuration checksum
+      ansible.builtin.stat:
+        path: '{{ edge_path }}'
+        checksum_algorithm: sha256
+      register: live
+    - name: Refuse to overwrite an unrelated change
+      ansible.builtin.assert:
+        that:
+          - (edge_original | hash('sha256')) == edge_baseline_sha256
+          - live.stat.isreg | default(false)
+          - live.stat.uid == 0
+          - live.stat.checksum in [edge_baseline_sha256, edge_candidate | hash('sha256')]
+        quiet: true
+    - name: Restore the exact original configuration
+      ansible.builtin.copy:
+        dest: '{{ edge_path }}'
+        content: '{{ edge_original }}'
+        owner: root
+        group: root
+        mode: '0644'
+        validate: '/usr/sbin/haproxy -c -f %s'
+      register: restored
+    - name: Reload only when the configuration changed
+      ansible.builtin.systemd:
+        name: haproxy-k3s-edge.service
+        state: reloaded
+      when: restored.changed
+    - name: Confirm the service is active
+      ansible.builtin.command: systemctl is-active haproxy-k3s-edge.service
+      changed_when: false
