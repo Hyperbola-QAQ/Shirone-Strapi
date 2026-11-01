@@ -1,0 +1,57 @@
+---
+- name: Allow the two reviewed host-network gateways to reach CMS
+  hosts: "{{ shirone_preview_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  vars:
+    shirone_apply_gateway_nodes: false
+    shirone_gateway_policy_file: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/k8s/cms-gateway-nodes.yaml"
+  tasks:
+    - name: Require the intended workspace and live execution
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - not (shirone_apply_gateway_nodes | bool and ansible_check_mode)
+        quiet: true
+    - name: Read the reviewed namespace identity
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, --kubeconfig=/home/hyperbola/.kube/config, get, namespace, mizuki, -o, 'jsonpath={.metadata.uid}']
+      register: reviewed_namespace
+      changed_when: false
+      check_mode: false
+    - name: Require the production namespace
+      ansible.builtin.assert:
+        that: [reviewed_namespace.stdout == '4c0430e0-23fe-4cbc-8795-2e2fee490b39']
+        quiet: true
+    - name: Read exact policy candidate
+      ansible.builtin.set_fact:
+        policy: "{{ lookup('file', shirone_gateway_policy_file) | from_yaml }}"
+    - name: Verify the candidate grants only the reviewed node addresses
+      ansible.builtin.assert:
+        that:
+          - policy.metadata.name == 'shirone-cms-gateway-node-ingress'
+          - policy.metadata.namespace == 'mizuki'
+          - policy.spec.podSelector.matchLabels.app == 'shirone-cms'
+          - "policy.spec.ingress[0].from == [{'ipBlock': {'cidr':'192.168.86.11/32'}}, {'ipBlock': {'cidr':'192.168.86.21/32'}}]"
+          - "policy.spec.ingress[0].ports == [{'protocol':'TCP', 'port':1337}]"
+        quiet: true
+    - name: Refuse to overwrite an existing policy
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, --kubeconfig=/home/hyperbola/.kube/config, -n, mizuki, get, networkpolicy, shirone-cms-gateway-node-ingress, --ignore-not-found, -o, name]
+      register: existing
+      changed_when: false
+      check_mode: false
+    - name: Require an absent policy
+      ansible.builtin.assert:
+        that: [existing.stdout | length == 0]
+        quiet: true
+    - name: Verify API admission
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, --kubeconfig=/home/hyperbola/.kube/config, create, --dry-run=server, -f, '-', -o, name]
+        stdin: '{{ policy | to_json }}'
+      changed_when: false
+      check_mode: false
+    - name: Create reviewed policy
+      ansible.builtin.command:
+        argv: [kubectl, --request-timeout=15s, --kubeconfig=/home/hyperbola/.kube/config, create, -f, '-', -o, name]
+        stdin: '{{ policy | to_json }}'
+      when: shirone_apply_gateway_nodes | bool

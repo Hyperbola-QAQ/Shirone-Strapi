@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shirone-cms-gateway-node-ingress
+  namespace: mizuki
+  labels: {app.kubernetes.io/part-of: shirone-strapi}
+spec:
+  podSelector:
+    matchLabels: {app: shirone-cms}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 192.168.86.11/32}
+        - ipBlock: {cidr: 192.168.86.21/32}
+      ports:
+        - {protocol: TCP, port: 1337}
