@@ -1,0 +1,37 @@
+---
+# Default is read-only plus server-side dry-run; do not point this at a PVC.
+- name: Preview or execute the guarded disposable-search recovery
+  hosts: "{{ shirone_preview_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  vars:
+    recovery_namespace: mizuki
+    recovery_cms_uid: ''
+    recovery_search_uid: ''
+    recovery_apply: false
+    recovery_confirm: ''
+    recovery_kubeconfig: /home/hyperbola/.kube/config
+    recovery_expected_hostname: hyqaq-imini
+    recovery_script: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/tools/recover-search-index.py"
+  tasks:
+    - name: Read the operator host identity
+      ansible.builtin.command: hostname
+      register: recovery_hostname
+      changed_when: false
+      check_mode: false
+    - name: Require explicit reviewed identities and mutation confirmation
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - recovery_hostname.stdout | lower == recovery_expected_hostname
+          - recovery_cms_uid is match('^[a-f0-9-]{36}$')
+          - recovery_search_uid is match('^[a-f0-9-]{36}$')
+          - recovery_namespace == 'mizuki' or recovery_namespace is match('^shirone-recovery-test-[a-f0-9]{12}$')
+          - not (recovery_apply | bool) or recovery_confirm == 'discard-rebuildable-search-index'
+          - not (recovery_apply | bool and ansible_check_mode)
+        quiet: true
+    - name: Preview or run the guarded recovery
+      ansible.builtin.command:
+        argv: "{{ ['python3', '-', '--namespace', recovery_namespace, '--cms-uid', recovery_cms_uid, '--search-uid', recovery_search_uid, '--kubeconfig', recovery_kubeconfig] + (['--apply', '--confirm', recovery_confirm] if recovery_apply | bool else []) }}"
+        stdin: "{{ lookup('file', recovery_script) }}"
+      changed_when: recovery_apply | bool
+      check_mode: false

@@ -1,0 +1,28 @@
+# REVIEW CANDIDATE ONLY: outside .github/workflows, so GitHub does not run it.
+# No push, pull_request or publication triggers are configured.
+name: Shirone-Strapi validation candidate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shirone-strapi-validation
+  cancel-in-progress: false
+jobs:
+  validation:
+    if: github.ref == 'refs/heads/main'
+    # This label must be attached only to a fresh, isolated runner without
+    # production credentials, Kubernetes access or a persistent Docker daemon.
+    runs-on: [self-hosted, Linux, X64, shirone-ci-isolated]
+    timeout-minutes: 60
+    env:
+      SHIRONE_CI_DISPOSABLE: 'yes'
+      NODE_IMAGE: 192.168.86.100:30500/ca-clean/node@sha256:4de898ca0d4e1f2169d9b846df3710f29f6787fd3131211e2e74a7898c0528cc
+      POSTGRES_TEST_IMAGE: 192.168.86.100:30500/ca-clean/postgresql@sha256:cc634644a1d502108b9282bd6e92474db4b96c4bb2480410fe24cf6cde823457
+      MEILI_TEST_IMAGE: 192.168.86.100:30500/shirone/meilisearch@sha256:cad32322d74319f2076f41828094774fbbacacff6bda32e317933293b76db616
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate without production access
+        run: bash deploy/ci/validate.sh

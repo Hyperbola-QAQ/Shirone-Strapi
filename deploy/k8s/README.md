@@ -1,8 +1,8 @@
-# Cluster deployment candidate — not ready to apply
+# Cluster deployment and migration notes
 
-These manifests only capture the current service shape. They intentionally refer to invalid image names and to Secrets and PVCs that are not created here. They do not change the existing `mizuki` Deployment, Service, HTTPRoutes or production traffic. They are not an Ansible deployment entrypoint.
+The site is deployed. The CMS, SSR and search workloads use the pinned images and resource definitions in this repository; live configuration is managed through `/home/hyperbola/Work/ansible-debian-k8s`. The domain and admin now serve IPv4 and IPv6. The IPv4 path uses the isolated gateway and single-origin SSH tunnel documented in [the IPv4 operations notes](../ansible/shirone-ipv4/README.md). The Strapi admin interface supports simplified Chinese. Automated application backups were removed at the owner's request.
 
-Before integration into `/home/hyperbola/Work/ansible-debian-k8s` and any apply:
+The checklist and dated checkpoints below are historical migration records, not assertions of current state or instructions to replay provisioning. Recheck live resources and consult current Ansible entrypoints before changes. At the time of the original review the checklist was:
 
 1. Use the existing SSH user kubeconfig on `imini` for read-only cluster checks; do not copy or print it. A fresh observation on 2026-10-30 found three Ready nodes, Mizuki 2/2, both routes accepted with resolved references, and CNPG 3/3 healthy. The formal Ansible inventory still requires a Vault credential not yet found. Recheck state and schedulable capacity at deployment time.
 2. Build and test the SSR and CMS images and select a compatible pinned Meilisearch image. Mirror through the configured domestic/cluster registry first and retain immutable digests. Confirm actual runtime env contracts, UID/GID, writable paths and dependency-aware readiness; TCP readiness here proves only that a port accepts connections.
