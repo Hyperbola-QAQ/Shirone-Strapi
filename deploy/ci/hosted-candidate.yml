@@ -1,0 +1,21 @@
+# REVIEW CANDIDATE ONLY. Outside .github/workflows; cannot trigger a job.
+# Manual source validation, not image publication or deployment.
+name: Shirone-Strapi hosted source validation candidate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shirone-strapi-hosted-source
+  cancel-in-progress: false
+jobs:
+  source:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate source with checksum-pinned tools
+        run: bash deploy/ci/hosted-validate.sh

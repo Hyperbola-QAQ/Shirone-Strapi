@@ -33,6 +33,18 @@ mutable tag, a self-asserted commit label, or an unsigned file is insufficient.
 Until that mechanism and the isolated runner exist, do not claim fully automated
 CI/CD or install the candidate workflow.
 
+`hosted-candidate.yml` is a second inactive, manual-dispatch-only candidate for
+GitHub-hosted source validation. Its `hosted-validate.sh` obtains exact Node
+22.23.4 and pnpm 12.16.1 from the domestic mirror first, validates the pinned
+SHA-256/SHA-512 values, and only falls back to the official source on download
+or checksum failure while retaining the same version and checksum. It runs the
+source tests, checks and builds; it does not claim to build or attest the exact
+private-registry production images. The Node checksum and pnpm integrity value
+were checked against both domestic and official metadata. Shell syntax and the
+missing-runner-temp guard pass locally; a full GitHub-hosted run and actual
+download/integrity path have not yet been tested. Neither candidate lives in
+`.github/workflows`, and neither has been activated.
+
 ## Controlled deployment candidate
 
 `promote-reviewed.sh` is a controller-side entrypoint, not an automated job.
