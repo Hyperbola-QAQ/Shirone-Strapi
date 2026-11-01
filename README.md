@@ -18,7 +18,7 @@ Strapi 所需的数据库、密钥和渲染服务变量见 [cms/.env.example](cm
 
 ## 内容与安全
 
-Strapi 以 Markdown 和原 frontmatter 保存内容；仅发布的内容会被页面读取。保存时使用受认证的内部渲染服务，服务暂不可用时清除旧快照并在请求时重新渲染。动态内容禁用本地文件 include。搜索索引排除加密和草稿内容，搜索结果及上传资源会重新核对当前发布状态。不要将 Strapi 的整个上传目录直接公开。
+Strapi 以 Markdown 和原 frontmatter 保存内容；仅发布的内容会被页面读取。保存时使用受认证的内部渲染服务，服务暂不可用时清除旧快照并在请求时重新渲染。动态内容的 include 只读取已发布的 Strapi 片段，不读取服务器本地文件。搜索索引排除加密和草稿内容，搜索结果及上传资源会重新核对当前发布状态。不要将 Strapi 的整个上传目录直接公开。
 
 旧站内容迁移入口及 dry-run 说明在 [cms/README.md](cms/README.md)；生产部署、回退和数据恢复说明见 [deploy/k8s/README.md](deploy/k8s/README.md) 与 [deploy/k8s/RECOVERY.md](deploy/k8s/RECOVERY.md)。按站点所有者要求，当前没有自动应用备份。
 

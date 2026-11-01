@@ -1,6 +1,6 @@
 {
   "mode": "external",
-  "hidden": false,
+  "hidden": true,
   "title": "External image set",
   "description": "A remote album using explicit photo metadata and thumbnails.",
   "date": "2025-08-28",

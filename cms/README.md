@@ -10,7 +10,7 @@ pnpm build
 pnpm start
 ```
 
-The app requires supported Node.js 20–24 and PostgreSQL. Search sync requires `MEILI_URL`, `MEILI_ADMIN_KEY` and `MEILI_TASKS_KEY`. The complete publication path has been tested with disposable PostgreSQL, Strapi, Astro and Meilisearch containers; production cluster deployment and recovery remain to be verified.
+The app requires supported Node.js 20–24 and PostgreSQL. Search sync requires `MEILI_URL`, `MEILI_ADMIN_KEY` and `MEILI_TASKS_KEY`. The publication path has been tested with disposable PostgreSQL, Strapi, Astro and Meilisearch containers and on the production cluster.
 
 ## Archive migration
 
@@ -30,7 +30,7 @@ Draft MDX remains a draft with the exact original source in `metadata.migration.
 
 Set `INTERNAL_RENDER_URL` to the private Astro service URL ending in `/api/internal/render/` and share `INTERNAL_RENDER_TOKEN` through a Kubernetes Secret. The CMS sends the body and frontmatter to this internal endpoint before a save, then stores its versioned HTML and source hash with the document. Metadata object keys are canonicalized before hashing so PostgreSQL JSONB key ordering does not invalidate snapshots. On renderer failure the save still succeeds and clears the old snapshot; Astro renders the content on demand. A later save can persist a fresh snapshot, but there is no automatic write-back job for entries saved during an outage.
 
-Protected content (`encrypted`, or a nonempty `password`) and MDX migration drafts are never sent to this endpoint and their rendered snapshot is cleared. The endpoint must not be exposed publicly. Runtime Markdown file includes are disabled to prevent CMS content from reading application files.
+Protected content (`encrypted`, or a nonempty `password`) and MDX migration drafts are never sent to this endpoint and their rendered snapshot is cleared. The endpoint must not be exposed publicly. Runtime Markdown includes resolve only published Strapi snippets and do not read application files.
 
 `STRAPI_PUBLIC_URL` denotes the public site origin for generated media URLs. `/uploads/` must be handled by the site's publication-aware proxy; it must not bypass that proxy and connect directly to Strapi's upload directory. The importer rejects local media on draft or protected articles pending a secure private-media design.
 

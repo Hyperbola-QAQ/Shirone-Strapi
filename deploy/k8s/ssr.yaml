@@ -16,7 +16,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: ssr
-          image: 192.168.86.100:30500/shirone/ssr@sha256:4478ea63905ac441f16495f9d90c4d1a2d1a4709e542b28cffda4ac4763c0d28
+          image: 192.168.86.100:30500/shirone/ssr@sha256:152e59023e5a0a7e7798c5d363a36952aac9107d1ea88ee724eabc8d8bd1f0bf
           ports: [{name: http, containerPort: 4321}]
           env:
             - {name: HOST, value: '0.0.0.0'}
