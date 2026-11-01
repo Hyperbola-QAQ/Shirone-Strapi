@@ -26,9 +26,12 @@ done
 # are mandatory; never fall back by changing versions or ignoring integrity.
 pnpm install --frozen-lockfile
 pnpm --dir cms install --frozen-lockfile
+pnpm build
 pnpm test
 pnpm check
 pnpm type-check
+# Bootstrap tests need an email, but must never change the user's Git config.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.email GIT_CONFIG_VALUE_0=shirone-ci@example.invalid
 pnpm --dir cms test
 
 tag="shirone-ci-$(git rev-parse --short=12 HEAD)-$$"
@@ -40,8 +43,6 @@ trap cleanup EXIT
 docker build --build-arg "NODE_IMAGE=$NODE_IMAGE" -t "$cms_image" -f cms/Dockerfile cms
 docker build --build-arg "NODE_IMAGE=$NODE_IMAGE" -t "$ssr_image" .
 docker build --build-arg "NODE_IMAGE=$NODE_IMAGE" -t "$reconciler_image" -f deploy/Dockerfile.meili-key-reconciler .
-# Bootstrap tests need an email, but must never change the user's Git config.
-export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.email GIT_CONFIG_VALUE_0=shirone-ci@example.invalid
 SHIRONE_DISPOSABLE=yes CMS_TEST_IMAGE="$cms_image" SSR_TEST_IMAGE="$ssr_image" \
   POSTGRES_TEST_IMAGE="$POSTGRES_TEST_IMAGE" MEILI_TEST_IMAGE="$MEILI_TEST_IMAGE" \
   RECONCILER_TEST_IMAGE="$reconciler_image" node deploy/tests/strapi-search-e2e.cjs
