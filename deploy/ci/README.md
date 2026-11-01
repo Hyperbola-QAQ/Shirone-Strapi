@@ -87,3 +87,58 @@ wrapper also passed a real CMS admission preview from a clean synthetic Git
 repository with a local bare remote and a reviewed prior digest; that test did
 not use the production GitHub remote or apply the patch. No production apply or
 failure/rollback drill was performed by this candidate.
+
+## Next steps for isolated runner and provenance
+
+The repository is public. Standard GitHub-hosted Linux jobs run on fresh VMs,
+which avoid granting a persistent self-hosted runner and its Docker socket access
+to the production hosts. The three existing `mizuki-deploy` runners are online
+and are **not** suitable substitutes for the proposed isolated runner. At the
+time of review, the repository's default workflow token permissions were write
+and workflows could approve pull requests; the candidate explicitly limits its
+token to `contents: read`. Review repository-wide permissions separately before
+activation. The candidate has neither been installed nor enabled.
+
+The exact current Node, PostgreSQL and Meilisearch inputs are pinned in the
+private `192.168.86.100:30500` registry, which a GitHub-hosted VM cannot reach.
+Before using a hosted runner, establish how it will obtain the exact reviewed
+images using a trusted accessible mirror, while preserving required versions,
+platforms and digest checks. Do not open the private registry to the internet
+or silently substitute a different `ca-clean` image. Confirm whether the
+hosted runner's actual free disk and memory can build and test all images. If
+the exact inputs cannot safely be supplied, keep the pipeline disabled; a
+separate, disposable VM with no production credentials is an alternative only
+after its isolation and limited registry access are verified.
+
+A possible trusted release path is a separately reviewed, main-only,
+GitHub-hosted build that tests the exact images it publishes, records each OCI
+manifest digest and produces a GitHub artifact attestation. The release job
+would need narrowly scoped `contents: read`, `id-token: write` and
+`attestations: write`, plus `packages: write` only if it publishes to GHCR.
+Attestation proves provenance of its subject, not that meaningful tests were
+run; the trusted workflow must fail closed on test failures, and its exact
+workflow revision must be independently trusted. On the controller, verify the
+attested digest against the repository, signer workflow, expected source commit
+and ref, and require a GitHub-hosted signer. For example, after choosing and
+reviewing an actual signer workflow and obtaining an authenticated OCI image:
+
+```sh
+gh attestation verify 'oci://REGISTRY/IMAGE@sha256:DIGEST' \
+  --repo Hyperbola-QAQ/Shirone-Strapi \
+  --signer-workflow Hyperbola-QAQ/Shirone-Strapi/.github/workflows/REVIEWED.yml \
+  --source-ref refs/heads/main --source-digest REVIEWED_COMMIT \
+  --signer-digest REVIEWED_WORKFLOW_COMMIT --deny-self-hosted-runners
+```
+
+If a verified image is copied into the internal registry, use an OCI copy
+method that preserves the complete manifest digest and verify the destination
+digest equals the attested source before promotion. A `docker pull/tag/push`
+may rewrite the manifest and must not be assumed to preserve it. Registry
+access, package visibility, artifact attestation, image transfer, hosted-runner
+resource limits and a production promotion have **not** been tested or
+configured here. Do not enable automated publishing or deployment until the
+full exact-image path and failure/rollback handling have been exercised.
+
+References: [GitHub-hosted runner isolation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job),
+[GitHub artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations),
+[attestation verification flags](https://cli.github.com/manual/gh_attestation_verify).
