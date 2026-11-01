@@ -105,6 +105,35 @@ failure/rollback drill was performed by this candidate.
 
 ## Next steps for isolated runner and provenance
 
+`verify-provenance-candidate.py` is an **inactive, unintegrated candidate** for
+separating a build source commit from a subsequent deployment-manifest commit.
+It has only isolated tests with a simulated `gh`; no real signed attestation,
+published GHCR image, registry copy, or deployment has been verified. Do not
+use its exit status as authorization to deploy. It requires PyYAML and an
+independently reviewed, explicitly supplied workflow revision, and fixes the
+candidate signer identity to `.github/workflows/shirone-release.yml` (which
+does not yet exist). It requires the deployment commit to be a direct child of
+the build commit, change only the relevant deployment YAML and change only its
+image value semantically. It pins source commit, signer commit, main ref,
+hosted runner and immutable image digest in `gh attestation verify`. The GitHub
+CLI must be authenticated to GitHub and to GHCR for OCI subject retrieval;
+the internal registry must receive the exact same manifest digest, with actual
+copy and pull verification implemented before production use. A new unrelated
+commit between source and deployment will be refused by this deliberately
+strict candidate. It also cannot sequentially deploy both CMS and SSR built
+from the same source commit: after the first component's manifest commit, the
+second component's commit cannot be a direct child of that source commit.
+Before production integration, design and test a multi-component release that
+verifies every intervening commit, each attested subject, and only the
+explicitly approved manifest image changes; do not simply relax the ancestry
+or manifest-change checks. This check is not wired into
+`promote-reviewed.sh`.
+
+```sh
+python3 deploy/ci/test-provenance-candidate.py
+python3 deploy/ci/verify-provenance-candidate.py cms BUILD_COMMIT DEPLOY_COMMIT TRUSTED_SIGNER_COMMIT sha256:IMAGE_DIGEST
+```
+
 The repository is public. Standard GitHub-hosted Linux jobs run on fresh VMs,
 which avoid granting a persistent self-hosted runner and its Docker socket access
 to the production hosts. The three existing `mizuki-deploy` runners are online
