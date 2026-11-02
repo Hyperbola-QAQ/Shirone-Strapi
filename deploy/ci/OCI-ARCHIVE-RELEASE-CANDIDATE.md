@@ -66,6 +66,14 @@ commit or an unexpected workflow/ref.
 
 ## From signed file to cluster image
 
+`verify-oci-archive-candidate.py` is an isolated, fail-closed experiment for
+an uncompressed OCI archive. It reads without extracting, checks archive paths,
+the unique linux/amd64 manifest, descriptor sizes and SHA-256 hashes, and
+reports the archive and manifest digests separately. Its unit tests include
+tampering, traversal and symlink failures. It does not verify an attestation,
+decompress image layers to validate uncompressed `diff_ids`, prove safe layer
+contents, or replace runtime tests; it is not a release authorization boundary.
+
 The attested subject is the **archive file SHA-256**, not automatically an OCI
 manifest digest. On the operator controller, first use `gh attestation verify`
 on the exact downloaded file, pinning the repository, signer workflow and
