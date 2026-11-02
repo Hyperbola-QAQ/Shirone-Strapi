@@ -75,6 +75,12 @@ malicious build job ran meaningful tests. Protect and review the workflow and
 its scripts, and restrict package write access. The test job downloads and
 checksums Node 22.23.4 independently; its integration scripts use Node's
 built-in modules, not the source job's discarded PATH or node_modules.
+`actions/attest` v4's optional artifact storage record is disabled: its
+documentation limits storage records to organization-owned repositories and
+requires an additional permission, neither of which is needed for signing
+these images. The package visibility check cannot be atomic with a later push;
+restrict who can change package visibility and re-check visibility during the
+release process. A concurrent visibility change remains an external risk.
 
 After a failed or interrupted run, identify the run-specific staging tags and
 their exact digests, verify they are not referenced by any other run or
