@@ -74,6 +74,20 @@ build code can still leak contents before encryption.
 
 ## Controller verification and deployment
 
+`release-envelope-candidate.py` is a local-only, inactive experiment for this
+stage. It builds an unencrypted envelope with exactly three named OCI archives
+and fixed-format metadata. Inspection requires externally supplied expected
+source commit, recipient fingerprint and each expected manifest digest; it
+checks exact members, sizes and archive hashes before optionally extracting
+into a newly created private directory. It rechecks extracted OCI descriptors
+and diff IDs using `verify-oci-archive-candidate.py`. The flag
+`--authenticated-input` is only the caller's acknowledgment; it does **not**
+verify an attestation or perform age decryption. The caller must do those
+operations successfully first. Failures can leave a new private partial file or
+directory for the operator to inspect and clean; the candidate never removes
+existing data or overwrites existing output. Its local mock tests and a small
+real OCI fixture do not prove real GitHub or cryptographic operation.
+
 Download the exact expected run artifact, then **verify the ciphertext
 attestation before decrypting** with `gh attestation verify`, enforcing the
 repository, independently trusted signer workflow and revision, source commit,
