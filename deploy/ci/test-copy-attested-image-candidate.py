@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import tempfile
 from pathlib import Path
 import subprocess
 import unittest
@@ -36,7 +37,9 @@ class CopyTests(unittest.TestCase):
         return subprocess.CompletedProcess(args, 0, b'')
 
     def check(self, **kwargs):
-        with patch.object(candidate.subprocess, 'run', self.run_fake), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(candidate.subprocess, 'run', self.run_fake), \
+                patch.object(candidate, 'destination_cert_dir', return_value='/protected/ca'), \
+                contextlib.redirect_stdout(io.StringIO()):
             candidate.check(kwargs.get('component', 'cms'), kwargs.get('source', SOURCE),
                             kwargs.get('signer', SIGNER), kwargs.get('digest', DIGEST), kwargs.get('apply', False))
 
@@ -57,8 +60,21 @@ class CopyTests(unittest.TestCase):
         copy = self.calls[2]
         self.assertIn('--all', copy)
         self.assertIn('--preserve-digests', copy)
+        self.assertEqual(copy[copy.index('--dest-cert-dir') + 1], '/protected/ca')
         self.assertTrue(copy[-1].startswith('docker://192.168.86.100:30500/shirone/ssr:candidate-'))
         self.assertEqual(self.calls[3][-1], 'docker://192.168.86.100:30500/shirone/ssr@' + DIGEST)
+        for inspect_call in self.calls[3:]:
+            self.assertEqual(inspect_call[inspect_call.index('--cert-dir') + 1], '/protected/ca')
+            self.assertNotIn('--tls-verify=false', inspect_call)
+
+    def test_unprotected_or_extra_ca_files_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            (directory / 'ca.crt').write_text('fake')
+            (directory / 'client.key').write_text('fake')
+            with patch.object(candidate, 'DEST_CERT_DIR', directory):
+                with self.assertRaises(ValueError):
+                    candidate.destination_cert_dir()
 
     def test_bad_inputs_fail_before_any_io(self):
         for params in ({'source': 'main'}, {'signer': 'main'}, {'digest': 'latest'}, {'component': '../cms'}):
