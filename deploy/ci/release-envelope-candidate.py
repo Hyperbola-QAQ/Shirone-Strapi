@@ -59,11 +59,15 @@ def open_regular(path):
 
 
 def open_envelope(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    # An integer is an already-open trusted descriptor supplied by a local
+    # caller; the command-line interface only accepts paths and never follows
+    # a final symlink.
+    fd = os.dup(path) if isinstance(path, int) else os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         info = os.fstat(fd)
         require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_TOTAL + 1024 * 1024,
                 'envelope must be a bounded regular file')
+        os.lseek(fd, 0, os.SEEK_SET)
         return os.fdopen(fd, 'rb')
     except Exception:
         os.close(fd)

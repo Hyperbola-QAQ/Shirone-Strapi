@@ -88,6 +88,20 @@ directory for the operator to inspect and clean; the candidate never removes
 existing data or overwrites existing output. Its local mock tests and a small
 real OCI fixture do not prove real GitHub or cryptographic operation.
 
+`encrypted-release-candidate.py` is a separate inactive local experiment. Its
+decrypt path requires an expected ciphertext hash and invokes `gh attestation
+verify` with fixed repository/workflow/ref and explicit source and signer
+commits before opening the private identity or creating a plaintext output.
+It then runs `age`, waits for successful authenticated decryption and checks
+envelope identities. The identity file and output directory must be private;
+failures may leave a newly created private partial output and return nonzero.
+This program never generates keys, invokes deployment or removes caller files.
+It assumes independently trusted `gh` and `age` executables and a separately
+reviewed signer revision. Real age success, wrong-key, truncation and tampering
+tests passed offline using temporary test keys; the GH verifier was a test
+stub, so **no real attestation or end-to-end authorization has been tested**.
+Further OCI extraction and validation are still required after decryption.
+
 Download the exact expected run artifact, then **verify the ciphertext
 attestation before decrypting** with `gh attestation verify`, enforcing the
 repository, independently trusted signer workflow and revision, source commit,
