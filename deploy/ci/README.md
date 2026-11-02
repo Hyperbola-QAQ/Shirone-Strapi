@@ -48,6 +48,53 @@ the root Astro TypeScript configuration. An actual GitHub-hosted run has not
 yet been tested. Neither candidate lives in
 `.github/workflows`, and neither has been activated.
 
+`hosted-release-candidate.yml` is an additional **inactive review candidate**
+for an end-to-end hosted release. It requires all five named GHCR packages to
+exist and be verified private before any push. It verifies the dispatched SHA is
+the current main SHA, runs the source checks, resets the disposable checkout,
+builds and pushes three temporary candidate images, then pulls and runs the
+full disposable integration tests by the immutable digests returned by Buildx.
+Only after those tests pass does it request a GitHub OIDC attestation for each
+of the exact three digests. It does not deploy or set a release tag. Package
+staging tags are not evidence of a successful test or attestation; a failed run
+may leave untrusted images in the private registry, which must never be
+promoted. The registry credentials are removed before tests execute and again
+at the end of the job. A trusted verifier must check all three attestations,
+the approved source SHA, reviewed signer-workflow path and workflow SHA,
+main ref, GitHub-hosted signer and matching digests before any transfer.
+
+The candidate uses separate fresh hosted jobs for source validation, image
+build, digest-based integration tests and signing. Source/build/test jobs have
+no OIDC or attestation-write permission; the signing job has no checkout and
+executes no project code. It reads the same build outputs tested by the test
+job, checks their syntax and signs fixed repository names only after all three
+prior jobs succeed. This prevents the tested code from directly using the
+signing job's identity, but the reviewed workflow, build job and its outputs
+remain trust boundaries: provenance alone cannot independently prove that a
+malicious build job ran meaningful tests. Protect and review the workflow and
+its scripts, and restrict package write access. The test job downloads and
+checksums Node 22.23.4 independently; its integration scripts use Node's
+built-in modules, not the source job's discarded PATH or node_modules.
+
+After a failed or interrupted run, identify the run-specific staging tags and
+their exact digests, verify they are not referenced by any other run or
+deployment, and remove only those unneeded versions through the registry's
+normal controlled retention process. Never consume an image merely because a
+candidate tag exists. After an approved registry-to-registry transfer, verify
+the destination manifest digest equals the attested source digest before a
+separate, reviewed deployment-manifest commit can refer to it.
+
+This draft deliberately fails closed if a package is absent, is not reported
+private, the authenticated GitHub token cannot query its visibility, the
+private mirror copies are absent or the domestic Meilisearch mirror is down.
+In particular, the private-package REST visibility check has **not** been
+proven to work with the intended workflow `GITHUB_TOKEN`; no token, package,
+runner, registry write, attestation, image transfer or production deployment
+has been tested. Review and test those prerequisites before moving the file to
+`.github/workflows`. The source SHA attested here is the build commit; a later
+deployment-manifest commit must reference the resulting immutable digest and
+must not be confused with the source SHA used for provenance verification.
+
 ## Controlled deployment candidate
 
 `promote-reviewed.sh` is a controller-side entrypoint, not an automated job.
