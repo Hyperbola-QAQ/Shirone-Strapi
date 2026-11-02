@@ -1,7 +1,7 @@
 # Hosted reconstruction of private base images: review only
 
 This is a proposed way to avoid granting a public repository's Actions access
-to private base packages. It is not implemented or approved for production. Do
+to private base packages. It is not complete or approved for production. Do
 not replace any existing image pin, enable a workflow, or claim that a rebuilt
 image has the original digest until an exact digest comparison proves it.
 
@@ -16,6 +16,21 @@ behavioral requirements below after review; it must not embed credentials,
 private registry data or unrelated host configuration.
 
 ## Known inputs and desired behavior
+
+`rebuild-node-candidate.sh` implements only a local Node executable replacement
+experiment. It requires a pre-downloaded archive, verifies both the fixed
+archive and executable SHA-256, and only builds from an already available
+digest-pinned parent. `--check` performs no image build; `--build` creates a
+local candidate only. There is deliberately no release mode. It does not yet
+implement or verify CA remediation or full equivalence, and must not be used
+for release. Docker BuildKit may contact a registry for metadata even with
+`--network=none`; that flag only restricts build-step networking.
+
+On 2026-11-02, a local smoke test used the configured domestic mirrors for
+the exact archive and parent. Archive and executable hash checks passed; the
+candidate starts Node 22.23.4 and npm 10.9.9 and matches the production Node
+binary hash. Invalid archive and nonexistent release mode were rejected. This
+does not establish complete filesystem, CA, runtime or OCI digest equivalence.
 
 - On linux/amd64, obtain the exact reviewed parent manifests by digest from a
   trusted mirror: Node `sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2`
