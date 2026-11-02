@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -112,6 +113,55 @@ class ArchiveTests(unittest.TestCase):
         manifest['subject'] = self.layer_desc
         self.create(manifest=manifest)
         with self.assertRaises(ValueError): module.verify(self.path)
+
+    def set_layer(self, data, media):
+        self.layer = data
+        self.layer_desc = descriptor(media, data)
+        self.manifest['layers'] = [self.layer_desc]
+
+    def test_gzip_layer_diff_id_validated(self):
+        self.set_layer(gzip.compress(self.layer, mtime=0), 'application/vnd.oci.image.layer.v1.tar+gzip')
+        self.create()
+        self.assertEqual(module.verify(self.path)['layer_count'], 1)
+
+    def test_matching_descriptor_but_wrong_diff_id_rejected(self):
+        self.set_layer(gzip.compress(b'different uncompressed data', mtime=0),
+                       'application/vnd.oci.image.layer.v1.tar+gzip')
+        self.create()
+        with self.assertRaisesRegex(ValueError, 'diff ID mismatch'): module.verify(self.path)
+
+    def test_malformed_gzip_rejected(self):
+        self.set_layer(b'not gzip', 'application/vnd.oci.image.layer.v1.tar+gzip')
+        self.create()
+        with self.assertRaisesRegex(ValueError, 'decompression failed'): module.verify(self.path)
+
+    def test_uncompressed_layer_limit(self):
+        self.create()
+        old_limit = module.MAX_LAYER_UNCOMPRESSED
+        module.MAX_LAYER_UNCOMPRESSED = 1
+        self.addCleanup(setattr, module, 'MAX_LAYER_UNCOMPRESSED', old_limit)
+        with self.assertRaisesRegex(ValueError, 'exceeds limit'): module.verify(self.path)
+
+    def test_total_uncompressed_image_limit(self):
+        self.create()
+        old_limit = module.MAX_IMAGE_UNCOMPRESSED
+        module.MAX_IMAGE_UNCOMPRESSED = 1
+        self.addCleanup(setattr, module, 'MAX_IMAGE_UNCOMPRESSED', old_limit)
+        with self.assertRaisesRegex(ValueError, 'exceeds limit'): module.verify(self.path)
+
+    def test_zstd_decoder_unavailable_is_rejected(self):
+        self.set_layer(b'any bytes', 'application/vnd.oci.image.layer.v1.tar+zstd')
+        self.create()
+        old_decoder = module.zstd
+        module.zstd = None
+        self.addCleanup(setattr, module, 'zstd', old_decoder)
+        with self.assertRaisesRegex(ValueError, 'zstd decoder is unavailable'): module.verify(self.path)
+
+    @unittest.skipIf(module.zstd is None, 'Python zstd decoder unavailable')
+    def test_zstd_layer_diff_id_validated(self):
+        self.set_layer(module.zstd.compress(self.layer), 'application/vnd.oci.image.layer.v1.tar+zstd')
+        self.create()
+        self.assertEqual(module.verify(self.path)['layer_count'], 1)
 
 
 if __name__ == '__main__':

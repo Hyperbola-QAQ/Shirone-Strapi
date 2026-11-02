@@ -5,6 +5,7 @@ The caller must independently verify the attestation over the archive file.
 No archive members are extracted and no registry or production API is used.
 """
 import argparse
+import gzip
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -12,9 +13,17 @@ import re
 import sys
 import tarfile
 
+try:
+    from compression import zstd
+except ImportError:  # Python before 3.14; reject zstd, never skip its verification.
+    zstd = None
+
 HASH = re.compile(r'^sha256:([0-9a-f]{64})$')
 MAX_JSON = 10 * 1024 * 1024
 MAX_ENTRIES = 10000
+# Upper bounds apply to uncompressed bytes, including concatenated frames.
+MAX_LAYER_UNCOMPRESSED = 8 * 1024 * 1024 * 1024
+MAX_IMAGE_UNCOMPRESSED = 32 * 1024 * 1024 * 1024
 OCI_INDEX = 'application/vnd.oci.image.index.v1+json'
 MANIFESTS = {'application/vnd.oci.image.manifest.v1+json',
              'application/vnd.docker.distribution.manifest.v2+json'}
@@ -154,8 +163,41 @@ def verify(path):
         require(isinstance(diff_ids, list) and len(diff_ids) == len(layers) and
                 all(isinstance(item, str) and HASH.fullmatch(item) for item in diff_ids),
                 'root filesystem diff IDs do not match layers')
-        for layer in layers:
+        total_uncompressed = 0
+        for layer, diff_id in zip(layers, diff_ids):
             descriptor(layer, LAYERS)
+            name = 'blobs/sha256/' + layer['digest'][7:]
+            stream = archive.extractfile(members[name])
+            require(stream is not None, 'cannot read layer for diff ID verification')
+            media = layer['mediaType']
+            try:
+                with stream:
+                    if media.endswith('+gzip') or media.endswith('.gzip'):
+                        reader = gzip.GzipFile(fileobj=stream, mode='rb')
+                    elif media.endswith('+zstd'):
+                        require(zstd is not None, 'zstd decoder is unavailable')
+                        # Limit decoder window allocation as well as output size.
+                        reader = zstd.ZstdFile(stream, 'rb', options={zstd.DecompressionParameter.window_log_max: 27})
+                    else:
+                        reader = stream
+                    hasher = hashlib.sha256()
+                    layer_size = 0
+                    with reader:
+                        for block in iter(lambda: reader.read(1024 * 1024), b''):
+                            layer_size += len(block)
+                            total_uncompressed += len(block)
+                            require(layer_size <= MAX_LAYER_UNCOMPRESSED and
+                                    total_uncompressed <= MAX_IMAGE_UNCOMPRESSED,
+                                    'uncompressed layer or image exceeds limit')
+                            hasher.update(block)
+                    require('sha256:' + hasher.hexdigest() == diff_id, 'uncompressed layer diff ID mismatch')
+            except (OSError, EOFError) as exc:
+                raise ValueError('layer decompression failed') from exc
+            except Exception as exc:
+                if isinstance(exc, ValueError):
+                    raise
+                # Decoder-specific exceptions are not stable across Python versions.
+                raise ValueError('layer decompression failed') from exc
         blobs = {name for name in members if name.startswith('blobs/sha256/')}
         require(blobs == seen, 'unreferenced blobs forbidden')
         require(sha_file(path) == archive_digest, 'archive changed during verification')
