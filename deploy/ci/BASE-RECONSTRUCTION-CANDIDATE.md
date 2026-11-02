@@ -52,6 +52,20 @@ export contained no denied certificates; the tool correctly rejected it
 instead of creating a pretend remediation. These observations do not replace
 the full acceptance checks below, and no image or workflow was deployed.
 
+In subsequent isolated runtime tests, the reconstructed PostgreSQL image and
+the current production base both ran as uid 26, reported PostgreSQL 18.4, and
+successfully initialized a disposable database, started on a local Unix socket,
+executed SQL, and stopped. Their Python/OpenSSL default trust sets each had 148
+certificates with identical sorted-fingerprint hashes, and neither contained
+either denied certificate. The Node candidate and production base reported
+identical `process.versions`, npm 10.9.9, and matching key execution config;
+each served a local HTTP request. Their Node default trust sets each had 116
+certificates with identical sorted-fingerprint hashes and neither denied
+certificate. These tests used network-disabled disposable containers and
+tmpfs for the database; they did not touch the cluster. They do not verify
+other truststores, external TLS handshakes, complete image equivalence, OCI
+digests, application integration, signatures, or recovery behavior.
+
 - On linux/amd64, obtain the exact reviewed parent manifests by digest from a
   trusted mirror: Node `sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2`
   and PostgreSQL `sha256:e6e1f467b52112f7e08aa380de81473106ff54b1834d90bcb4265a2a018e1921`.
