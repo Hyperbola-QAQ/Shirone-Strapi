@@ -103,6 +103,16 @@ class ArchiveTests(unittest.TestCase):
         self.create(manifest=manifest)
         with self.assertRaises(ValueError): module.verify(self.path)
 
+    def test_duplicate_json_key_rejected(self):
+        with self.assertRaises(ValueError):
+            module.parse_json(b'{"schemaVersion":2,"schemaVersion":1}')
+
+    def test_artifact_subject_rejected(self):
+        manifest = copy.deepcopy(self.manifest)
+        manifest['subject'] = self.layer_desc
+        self.create(manifest=manifest)
+        with self.assertRaises(ValueError): module.verify(self.path)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -158,6 +158,7 @@ def verify(path):
             descriptor(layer, LAYERS)
         blobs = {name for name in members if name.startswith('blobs/sha256/')}
         require(blobs == seen, 'unreferenced blobs forbidden')
+        require(sha_file(path) == archive_digest, 'archive changed during verification')
         return {'archive_digest': archive_digest, 'manifest_digest': selected['digest'],
                 'platform': 'linux/amd64', 'layer_count': len(layers)}
 
