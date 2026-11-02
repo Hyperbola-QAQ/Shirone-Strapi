@@ -168,7 +168,11 @@ image removes specific CA certificates. All four modified CA bundles were
 compared against the exact public parent and contain no added certificates;
 the added layers inspected contained no PEM private-key markers. This is not
 a complete secret or license review of the full images, nor authorization to
-publish them.
+publish them. A partial PEM-marker scan did find an upstream PostgreSQL image's
+`ssl-cert-snakeoil.key`; its hash is identical to the publicly available
+parent. It is a publicly disclosed image key and must never be used as a
+private production identity. The scan skipped large files and does not rule
+out other sensitive material.
 
 One option is to copy the two reviewed internal base manifests into a
 registry accessible to the hosted runner, using an OCI registry-to-registry
