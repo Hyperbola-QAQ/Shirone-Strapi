@@ -154,6 +154,34 @@ the exact inputs cannot safely be supplied, keep the pipeline disabled; a
 separate, disposable VM with no production credentials is an alternative only
 after its isolation and limited registry access are verified.
 
+### Input-image availability and disclosure boundary
+
+At the 2026-11-02 check the domestic DaoCloud mirror served the exact
+Meilisearch manifest `sha256:cad32322d74319f2076f41828094774fbbacacff6bda32e317933293b76db616`
+at `docker.m.daocloud.io/getmeili/meilisearch`. It also served the reviewed
+upstream **parent** manifests for Node (`sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2`)
+and PostgreSQL (`sha256:e6e1f467b52112f7e08aa380de81473106ff54b1834d90bcb4265a2a018e1921`),
+but those parents are not the production inputs. The Node production image
+adds the Node 22.23.4 binary to a 22.23.3 parent; that binary was compared by
+SHA-256 with the same-version npmmirror archive. The PostgreSQL production
+image removes specific CA certificates. All four modified CA bundles were
+compared against the exact public parent and contain no added certificates;
+the added layers inspected contained no PEM private-key markers. This is not
+a complete secret or license review of the full images, nor authorization to
+publish them.
+
+One option is to copy the two reviewed internal base manifests into a
+registry accessible to the hosted runner, using an OCI registry-to-registry
+copy that preserves digests (for example, `skopeo copy --preserve-digests`).
+First review all image layers, license and visibility, and provide only scoped
+registry credentials to the trusted transfer process. Independently read the
+destination manifest and verify the exact source digest and intended
+linux/amd64 platform; reject any rewritten manifest. Fetch by digest on the
+hosted runner and verify it again before building. The mirror may become
+unavailable and is not a trust root; do not replace these pins with mutable
+tags or substitute upstream parents. Registry permissions and visibility have
+not been changed, and no bases have been published.
+
 A possible trusted release path is a separately reviewed, main-only,
 GitHub-hosted build that tests the exact images it publishes, records each OCI
 manifest digest and produces a GitHub artifact attestation. The release job
