@@ -39,7 +39,9 @@ const api = async (url, options = {}) => { const res = await fetch(url, options)
     const anon = await media('strapi.hyperbola.cc'); if (anon.status !== 404) throw Error('anonymous media exposed');
     const wrongHost = await media('hyperbola.cc', cookie); if (wrongHost.status !== 404) throw Error('capability accepted on public site');
     const good = await media('strapi.hyperbola.cc', cookie); if (good.status !== 200 || good.headers.get('cross-origin-resource-policy') !== 'same-origin' || !(good.headers.get('cache-control')||'').includes('no-store')) throw Error(`authorized preview failed: ${good.status}`);
-    const altered = cookie.slice(0,-1) + (cookie.endsWith('A') ? 'B' : 'A'); if ((await media('strapi.hyperbola.cc', altered)).status !== 404) throw Error('forged capability accepted');
+    const separator = cookie.indexOf('='); const alteredBytes = Buffer.from(cookie.slice(separator + 1), 'base64url');
+    alteredBytes[30] ^= 1; const altered = cookie.slice(0, separator + 1) + alteredBytes.toString('base64url');
+    if ((await media('strapi.hyperbola.cc', altered)).status !== 404) throw Error('forged capability accepted');
     const jsonHeaders = { authorization:`Bearer ${session}`, 'content-type':'application/json' };
     const role = (await (await api(cms+'/admin/roles', { method:'POST', headers:jsonHeaders, body:JSON.stringify({name:'no-media-role'}) })).json()).data;
     const user = (await (await api(cms+'/admin/users', { method:'POST', headers:jsonHeaders, body:JSON.stringify({firstname:'No Media', email:'no-media@example.test', roles:[role.id]}) })).json()).data;

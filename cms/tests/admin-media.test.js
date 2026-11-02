@@ -16,6 +16,24 @@ test('sealed capability does not disclose its token and rejects forgery, wrong k
   assert.equal(unseal(bytes.toString('base64url'), secret, now), null);
   assert.equal(seal(token(now / 1000 - 1), secret, now), null);
 });
+test('sealed capability rejects noncanonical encodings of identical bytes', () => {
+  const now = 1900000000000;
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  // Vary token length to obtain a base64url encoding with unused trailing bits.
+  for (let extra = 0; extra < 3; extra++) {
+    const jwt = `${token(now / 1000 + 3600)}${'x'.repeat(extra)}`;
+    const value = seal(jwt, secret, now);
+    if (value.length % 4 === 0) continue;
+    const last = alphabet.indexOf(value.at(-1));
+    const alias = value.slice(0, -1) + alphabet[last + 1];
+    assert.notEqual(alias, value);
+    assert.deepEqual(Buffer.from(alias, 'base64url'), Buffer.from(value, 'base64url'));
+    assert.equal(unseal(value, secret, now), jwt);
+    assert.equal(unseal(alias, secret, now), null);
+    return;
+  }
+  assert.fail('could not construct a noncanonical base64url alias');
+});
 test('cookie and media paths reject ambiguous inputs', () => {
   assert.equal(cookieValue(`a=b; ${COOKIE}=abc`), 'abc');
   assert.equal(cookieValue(`${COOKIE}=a; ${COOKIE}=b`), null);

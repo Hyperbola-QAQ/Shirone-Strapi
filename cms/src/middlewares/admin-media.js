@@ -32,7 +32,7 @@ function unseal(value, secret, now = Date.now()) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,12000}$/.test(value)) return null;
   try {
     const bytes = Buffer.from(value, 'base64url');
-    if (bytes.length < 29) return null;
+    if (bytes.length < 29 || bytes.toString('base64url') !== value) return null;
     const decipher = crypto.createDecipheriv('aes-256-gcm', key(secret), bytes.subarray(0, 12));
     decipher.setAAD(Buffer.from(PURPOSE));
     decipher.setAuthTag(bytes.subarray(12, 28));
