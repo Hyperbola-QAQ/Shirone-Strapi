@@ -32,6 +32,26 @@ candidate starts Node 22.23.4 and npm 10.9.9 and matches the production Node
 binary hash. Invalid archive and nonexistent release mode were rejected. This
 does not establish complete filesystem, CA, runtime or OCI digest equivalence.
 
+`prepare-ca-overlay-candidate.py` is a separate offline experiment: it reads a
+trusted Docker-export tar, creates a new build context containing only modified
+CA bundles and a deletion script for the affected certificates and aliases,
+and refuses unsafe or unexpected paths. It does not establish the input image's
+identity, handle arbitrary images, or approve a release. Its four isolated
+tests cover removal, alias handling, existing output and unsafe paths.
+
+In a local test against the pinned PostgreSQL parent, it found four affected
+bundles, six removed files/aliases and eight certificate occurrences. An
+isolated image built with the overlay had identical bundle bytes, file mode and
+ownership to the current production PostgreSQL image. A Docker-export
+comparison found no path, regular-file content, file type, mode, ownership or
+link-target differences (excluding `.dockerenv`); User, Entrypoint, Cmd,
+WorkingDir, Env, ExposedPorts, Volumes and Healthcheck also matched. Docker
+export does not prove extended attributes, all timestamps, actual mounted
+volumes, OCI descriptor equality or runtime behavior. The Node candidate's
+export contained no denied certificates; the tool correctly rejected it
+instead of creating a pretend remediation. These observations do not replace
+the full acceptance checks below, and no image or workflow was deployed.
+
 - On linux/amd64, obtain the exact reviewed parent manifests by digest from a
   trusted mirror: Node `sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2`
   and PostgreSQL `sha256:e6e1f467b52112f7e08aa380de81473106ff54b1834d90bcb4265a2a018e1921`.
