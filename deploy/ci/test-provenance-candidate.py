@@ -24,6 +24,8 @@ class CandidateTests(unittest.TestCase):
         self.path = self.repo / 'deploy/k8s/cms.yaml'
         self.path.parent.mkdir(parents=True)
         self.path.write_text(self.manifest(OLD))
+        self.ssr = self.path.with_name('ssr.yaml')
+        self.ssr.write_text(self.manifest(OLD).replace('shirone-cms', 'shirone-ssr').replace('name: cms', 'name: ssr').replace('/cms@', '/ssr@'))
         self.git('add', '.')
         self.git('commit', '-qm', 'source')
         self.source = self.git('rev-parse', 'HEAD')
@@ -35,7 +37,7 @@ class CandidateTests(unittest.TestCase):
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         gh = self.bin / 'gh'
-        gh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$GH_ARGS_FILE"\nexit "${GH_EXIT:-0}"\n')
+        gh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$GH_ARGS_FILE"\ncase "$*" in *"${GH_FAIL_SUBJECT:-__never__}"*) exit 1;; esac\nexit "${GH_EXIT:-0}"\n')
         gh.chmod(0o755)
 
     def tearDown(self):
@@ -54,10 +56,10 @@ class CandidateTests(unittest.TestCase):
         self.git('commit', '-qm', 'deployment')
         self.deployment = self.git('rev-parse', 'HEAD')
 
-    def verify(self, source=None, deployment=None, signer=None, digest=NEW, gh_exit='0'):
+    def verify(self, source=None, deployment=None, signer=None, digest=NEW, gh_exit='0', component='cms', fail_subject='__never__'):
         env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
-                   GH_ARGS_FILE=str(self.root / 'gh-args'), GH_EXIT=gh_exit)
-        return subprocess.run(['python3', str(SCRIPT), 'cms', source or self.source,
+                   GH_ARGS_FILE=str(self.root / 'gh-args'), GH_EXIT=gh_exit, GH_FAIL_SUBJECT=fail_subject)
+        return subprocess.run(['python3', str(SCRIPT), component, source or self.source,
                                deployment or self.deployment, signer or self.source, digest],
                               cwd=self.repo, env=env, capture_output=True, text=True)
 
@@ -104,6 +106,54 @@ class CandidateTests(unittest.TestCase):
         self.commit_deployment()
         self.git('push', '-q', '--force', 'origin', 'main')
         self.assertNotEqual(self.verify().returncode, 0)
+
+    def test_sequential_cms_ssr_requires_both_attestations(self):
+        self.ssr.write_text(self.ssr.read_text().replace(OLD, NEW))
+        self.commit_deployment()
+        self.git('push', '-q', 'origin', 'main')
+        result = self.verify(component='ssr')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = (self.root / 'gh-args').read_text().splitlines()
+        self.assertIn('oci://ghcr.io/hyperbola-qaq/shirone-cms@' + NEW, args)
+        self.assertIn('oci://ghcr.io/hyperbola-qaq/shirone-ssr@' + NEW, args)
+        self.assertEqual(args.count('--source-digest'), 2)
+
+    def test_intermediate_unrelated_commit_rejected(self):
+        self.git('reset', '--hard', '-q', self.source)
+        (self.repo / 'unrelated').write_text('x')
+        self.commit_deployment()
+        self.ssr.write_text(self.ssr.read_text().replace(OLD, NEW))
+        self.commit_deployment()
+        self.git('push', '-q', '--force', 'origin', 'main')
+        self.assertNotEqual(self.verify(component='ssr').returncode, 0)
+
+    def test_requested_component_must_be_last(self):
+        self.ssr.write_text(self.ssr.read_text().replace(OLD, NEW))
+        self.commit_deployment()
+        self.git('push', '-q', 'origin', 'main')
+        self.assertNotEqual(self.verify(component='cms').returncode, 0)
+
+    def test_failed_intermediate_or_final_attestation_rejected(self):
+        self.ssr.write_text(self.ssr.read_text().replace(OLD, NEW))
+        self.commit_deployment()
+        self.git('push', '-q', 'origin', 'main')
+        self.assertNotEqual(self.verify(component='ssr', fail_subject='shirone-cms@').returncode, 0)
+        self.assertNotEqual(self.verify(component='ssr', fail_subject='shirone-ssr@').returncode, 0)
+
+    def test_repeated_component_rejected(self):
+        self.path.write_text(self.manifest('sha256:' + 'c' * 64))
+        self.commit_deployment()
+        self.git('push', '-q', 'origin', 'main')
+        self.assertNotEqual(self.verify(digest='sha256:' + 'c' * 64).returncode, 0)
+
+    def test_intermediate_manifest_tampering_rejected(self):
+        self.git('reset', '--hard', '-q', self.source)
+        self.path.write_text(self.manifest(NEW, '  replicas: 8\n'))
+        self.commit_deployment()
+        self.ssr.write_text(self.ssr.read_text().replace(OLD, NEW))
+        self.commit_deployment()
+        self.git('push', '-q', '--force', 'origin', 'main')
+        self.assertNotEqual(self.verify(component='ssr').returncode, 0)
 
 
 if __name__ == '__main__':
