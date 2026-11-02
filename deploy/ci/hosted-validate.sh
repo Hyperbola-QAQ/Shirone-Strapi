@@ -44,6 +44,7 @@ pnpm_cmd=(node "$work/pnpm/package/bin/pnpm.mjs")
 # GitHub-hosted checkouts do not have user.email configured by default.
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.email GIT_CONFIG_VALUE_0=ci@example.invalid \
   "${pnpm_cmd[@]}" --dir cms test
+node --test deploy/ci/release-guards.test.cjs
 # Strapi searches parent directories for tsconfig.json. The repository root has
 # Astro's unrelated TypeScript config; reproduce the CMS-only Docker context.
 cp -a cms "$work/cms-build"
