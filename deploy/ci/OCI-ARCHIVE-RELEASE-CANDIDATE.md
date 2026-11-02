@@ -26,6 +26,35 @@ possible billing need actual measurement before any enabled or recurring use.
 Use the shortest useful retention supported by GitHub; never assume the free
 storage allowance is sufficient.
 
+### Local historical-layer screening
+
+`audit-oci-disclosure-candidate.py` is a **screening aid**, not an approval
+or proof that an archive is safe to disclose. It first verifies the OCI
+archive, selected platform, descriptors and uncompressed layer diff IDs.
+It then screens the image metadata and every historical layer, including
+files subsequently removed by whiteouts, decompressed tar bytes after end
+markers, member names, link targets, PAX metadata and regular-file content.
+It flags common credential patterns, sensitive paths, path traversal,
+special layer entries, and nested compressed/archive files that it cannot
+inspect. It does not extract files or report matched content or paths.
+
+```sh
+python3 deploy/ci/test-audit-oci-disclosure-candidate.py
+python3 deploy/ci/audit-oci-disclosure-candidate.py /path/to/image.oci.tar
+```
+
+The JSON report contains the archive digest, layer and screened-entry counts,
+and categorical `findings`. It always states `manual_review_required: true`
+and `upload_authorized: false`. Exit status 0 means no configured finding was
+detected; 1 means one or more findings, including uninspected nested archives;
+2 means screening failed. A clean result does not show that all secrets,
+proprietary or personal material, binary formats, or semantically sensitive
+content were detected. In particular, nested archives are **flagged rather
+than decompressed**, and the regex patterns are incomplete. Human review and
+a demonstrated process for all remaining nested/binary contents remain
+mandatory before any archive is made accessible to repository readers. Never
+upload an archive or use a clean result as a release authorization.
+
 ## Proposed isolated jobs
 
 1. **Source validation:** on a fresh GitHub-hosted runner, run the reviewed
