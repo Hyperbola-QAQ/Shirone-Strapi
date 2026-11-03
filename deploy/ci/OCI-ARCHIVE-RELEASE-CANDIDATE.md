@@ -1,9 +1,24 @@
 # Public OCI archive release path: design only
 
 This is an alternative to granting a public repository's Actions access to
-private GHCR packages. It is not implemented, tested, or approved for
+private GHCR packages. It is not implemented end-to-end or approved for
 production. The existing workflows remain disabled and the current GHCR-based
 candidate does not implement this design.
+
+`build-tested-oci-candidate.sh` implements a local-only portion of this design:
+on an explicitly disposable machine it creates three OCI archives, verifies
+their descriptors and uncompressed layer identities, imports them, and runs
+real integration suites using the content-addressed imported image IDs. It
+checks each archive hash again after tests. It does not establish that its
+supplied base images are approved, encrypt, sign, upload, deploy, or authorize
+a release. A clean temporary Git clone and pinned local production base inputs
+passed the full isolated publication, edit, unpublish, deletion, restricted
+media and search-recovery tests. Node and pnpm were obtained from configured
+domestic mirrors with pinned checksum checks. A first attempt exposed that
+Docker's containerd image store uses a manifest digest as image ID while the
+classic store uses a config digest; the candidate verifies either against the
+already verified archive. This proves the local path with the supplied base
+images only; it is not a GitHub-hosted run or evidence of signed provenance.
 
 ## Disclosure and resource boundary
 

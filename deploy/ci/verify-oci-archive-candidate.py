@@ -202,6 +202,7 @@ def verify(path):
         require(blobs == seen, 'unreferenced blobs forbidden')
         require(sha_file(path) == archive_digest, 'archive changed during verification')
         return {'archive_digest': archive_digest, 'manifest_digest': selected['digest'],
+                'config_digest': manifest['config']['digest'],
                 'platform': 'linux/amd64', 'layer_count': len(layers)}
 
 
