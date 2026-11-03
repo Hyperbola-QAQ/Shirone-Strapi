@@ -20,10 +20,14 @@ Other changes, merges, duplicate components, a dirty worktree and stale remote
 main fail closed. Deploy the first component before pushing the second manifest
 commit; the underlying guarded entrypoint requires the exact current main.
 
-The tool invokes GitHub's attestation verifier for the exact ciphertext before
-opening the private key or decrypting. It requires the configured repository,
-signer workflow, independently trusted signer revision and build source,
-main ref and GitHub-hosted signer. After complete `age` authentication it
+The tool first verifies the separate signed metadata file, requiring it to bind
+the independently expected ciphertext digest, recipient, source and all three
+OCI manifest digests. It then invokes GitHub's attestation verifier for the
+exact ciphertext before opening the private key or decrypting. Both attestations
+must have the configured repository, signer workflow, independently trusted
+signer revision and build source, main ref and GitHub-hosted signer. Neither a
+partially signed release nor an untrusted metadata file authorizes deployment.
+After complete `age` authentication it
 validates the three actual embedded OCI archives, extracts them to a newly
 created private temporary directory, and rechecks the target manifest. The
 temporary plaintext is removed when the normal process exits, but abrupt

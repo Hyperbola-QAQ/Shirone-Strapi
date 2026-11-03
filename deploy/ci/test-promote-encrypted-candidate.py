@@ -32,6 +32,7 @@ class Guards(unittest.TestCase):
         self.chain = install(p, 'validate_chain', side_effect=lambda *a: self.calls.append('chain'))
         self.decrypt = install(p.crypto, 'decrypt', side_effect=lambda *a: self.calls.append('verified-decrypt'))
         install(p.crypto, 'recipient_fingerprint', return_value='sha256:' + 'd' * 64)
+        self.metadata = install(p.metadata_verifier, 'verify', side_effect=lambda *a: (self.calls.append('verified-metadata') or {'manifests': DIGESTS.copy()}))
         install(p.env, 'inspect', side_effect=lambda *a, **kw: self.calls.append('envelope'))
         install(p.env.oci, 'verify', return_value={'manifest_digest': DIGESTS['cms']})
         install(p.registry, 'destination_cert_dir', return_value='/trusted/ca')
@@ -40,12 +41,12 @@ class Guards(unittest.TestCase):
         self.proc = install(p.subprocess, 'run', side_effect=lambda args, **kw: self.calls.append(args))
 
     def invoke(self, **kw):
-        return p.promote('cms', SOURCE, DEPLOYMENT, SIGNER, UID, OLD, '/cipher',
+        return p.promote('cms', SOURCE, DEPLOYMENT, SIGNER, UID, OLD, '/metadata', '/cipher',
                          'sha256:' + 'e' * 64, '/key', 'recipient', DIGESTS, **kw)
 
     def test_preview_checks_provenance_before_registry_and_never_applies(self):
         self.invoke()
-        self.assertEqual(self.calls[:3], ['chain', 'verified-decrypt', 'envelope'])
+        self.assertEqual(self.calls[:4], ['verified-metadata', 'chain', 'verified-decrypt', 'envelope'])
         command = self.calls[-1]
         self.assertEqual(command[0], 'bash')
         self.assertNotIn('--apply', command)
@@ -54,7 +55,7 @@ class Guards(unittest.TestCase):
     def test_attestation_or_decryption_failure_stops_everything(self):
         self.decrypt.side_effect = ValueError('verification failed')
         with self.assertRaises(ValueError): self.invoke(copy_image=True, apply=True)
-        self.assertEqual(self.calls, ['chain'])
+        self.assertEqual(self.calls, ['verified-metadata', 'chain'])
         self.proc.assert_not_called()
 
     def test_chain_failure_prevents_decryption_and_copy(self):
@@ -62,6 +63,28 @@ class Guards(unittest.TestCase):
         with self.assertRaises(ValueError): self.invoke(copy_image=True, apply=True)
         self.decrypt.assert_not_called()
         self.proc.assert_not_called()
+
+    def test_metadata_attestation_failure_prevents_any_effect(self):
+        self.metadata.side_effect = ValueError('bad metadata attestation')
+        with self.assertRaises(ValueError): self.invoke(copy_image=True, apply=True)
+        self.chain.assert_not_called()
+        self.decrypt.assert_not_called()
+        self.proc.assert_not_called()
+
+    def test_metadata_must_bind_expected_manifests(self):
+        self.metadata.side_effect = None
+        self.metadata.return_value = {'manifests': {**DIGESTS, 'cms': 'sha256:' + 'f' * 64}}
+        with self.assertRaises(ValueError): self.invoke(copy_image=True, apply=True)
+        self.chain.assert_not_called()
+        self.decrypt.assert_not_called()
+        self.proc.assert_not_called()
+
+    def test_metadata_and_ciphertext_use_same_expected_identity(self):
+        self.invoke()
+        self.assertEqual(self.metadata.call_args.args, ('/metadata', SOURCE, SIGNER,
+                         'sha256:' + 'd' * 64, 'sha256:' + 'e' * 64))
+        self.assertEqual(self.decrypt.call_args.args[2:7], ('/key', 'recipient', SOURCE, SIGNER,
+                         'sha256:' + 'e' * 64))
 
     def test_wrong_internal_digest_blocks_deployment(self):
         self.check.side_effect = ValueError('bad digest')
@@ -83,10 +106,10 @@ class Guards(unittest.TestCase):
 
     def test_invalid_uid_or_image_rejected_before_any_action(self):
         with self.assertRaises(ValueError):
-            p.promote('cms', SOURCE, DEPLOYMENT, SIGNER, 'bad', OLD, '/cipher',
+            p.promote('cms', SOURCE, DEPLOYMENT, SIGNER, 'bad', OLD, '/metadata', '/cipher',
                       'sha256:' + 'e' * 64, '/key', 'recipient', DIGESTS)
         with self.assertRaises(ValueError):
-            p.promote('cms', SOURCE, DEPLOYMENT, SIGNER, UID, 'bad', '/cipher',
+            p.promote('cms', SOURCE, DEPLOYMENT, SIGNER, UID, 'bad', '/metadata', '/cipher',
                       'sha256:' + 'e' * 64, '/key', 'recipient', DIGESTS)
         self.assertEqual(self.calls, [])
 

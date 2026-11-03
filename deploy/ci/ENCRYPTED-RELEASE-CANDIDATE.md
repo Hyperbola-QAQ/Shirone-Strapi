@@ -35,13 +35,13 @@ it or add production content to release artifacts.
    checked controller public key whose exact value is bound to the trusted
    workflow revision. Do not generate or import the controller's private key
    into CI. Remove plaintext from the upload set, and upload only the resulting
-   ciphertext as a run-specific immutable workflow artifact. No production
+   ciphertext and non-secret digest metadata as a run-specific immutable workflow artifact. No production
    credentials, database, uploads, logs or `.env` files belong in the envelope.
 4. A **separate fresh signing job** runs only after all prior checks succeed.
    It does not check out or execute project scripts. Download the exact
-   build-run artifact ID, independently compare its ciphertext SHA-256 to the
-   expected build-job output, and use a pinned, reviewed `actions/attest` with
-   `subject-path` to attest that exact ciphertext file. Give OIDC and
+   build-run artifact ID, independently compare both file SHA-256 values to the
+   expected build-job outputs, and use a pinned, reviewed `actions/attest` with
+   `subject-path` to attest both the ciphertext and metadata files. Give OIDC and
    attestation permissions only to this signing job; no GHCR package permission
    is required. Fail closed on missing artifacts, hashes, jobs or unexpected
    source/ref/workflow identity.
@@ -73,6 +73,22 @@ build context and job outputs before real use. Runner compromise or malicious
 build code can still leak contents before encryption.
 
 ## Controller verification and deployment
+
+`hosted-encrypted-release-candidate.yml` is an inactive manual-dispatch
+candidate outside `.github/workflows`. It requires a reviewed
+`deploy/ci/release-recipient.txt` public key file, which is not yet present;
+no private key is generated or accessed by that workflow. Its build job emits
+a strict `metadata.json` containing source commit, recipient fingerprint,
+ciphertext digest and the three OCI manifest digests. The separate signing job
+signs the metadata and ciphertext as separate file subjects. The controller
+must first run `verify-release-metadata-candidate.py` with independently
+trusted source, signer and recipient identities and the SHA-256 of the
+downloaded ciphertext. Only after metadata attestation succeeds may it use
+those signed manifest identities as the expected values for
+`encrypted-release-candidate.py decrypt`; that command separately verifies the
+ciphertext attestation before decrypting. Build logs are never a trust root.
+The workflow, tool installation and metadata verification are local candidates;
+mock signature tests do not prove actual GitHub-hosted operation or signing.
 
 `release-envelope-candidate.py` is a local-only, inactive experiment for this
 stage. It builds an unencrypted envelope with exactly three named OCI archives

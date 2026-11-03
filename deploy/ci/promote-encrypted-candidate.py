@@ -29,6 +29,7 @@ crypto = module('encrypted_release_candidate', 'encrypted-release-candidate.py')
 env = crypto.envelope
 registry = module('copy_attested_candidate', 'copy-attested-image-candidate.py')
 policy = module('provenance_candidate', 'verify-provenance-candidate.py')
+metadata_verifier = module('release_metadata_candidate', 'verify-release-metadata-candidate.py')
 COMMIT = re.compile(r'^[0-9a-f]{40}$')
 UID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
@@ -82,7 +83,7 @@ def validate_chain(component, source, deployment, digests):
     require(final == component, 'last release commit is not requested component')
 
 
-def promote(component, source, deployment, signer, uid, old, ciphertext, ciphertext_digest,
+def promote(component, source, deployment, signer, uid, old, metadata, ciphertext, ciphertext_digest,
             key, recipient, digests, copy_image=False, apply=False):
     require(component in ('cms', 'ssr'), 'unsupported component')
     require(all(COMMIT.fullmatch(x) for x in (source, deployment, signer)), 'full commits required')
@@ -92,6 +93,12 @@ def promote(component, source, deployment, signer, uid, old, ciphertext, ciphert
     pattern = rf'192\.168\.86\.100:30500/shirone/{component}@sha256:[0-9a-f]{{64}}'
     target = f'192.168.86.100:30500/shirone/{component}@{digests[component]}'
     require(bool(re.fullmatch(pattern, old)) and old != target, 'invalid old image')
+    # Require *both* signed subjects. The signed metadata binds the exact
+    # ciphertext hash, source, recipient and all three OCI manifest digests.
+    # A signed ciphertext alone must not authorize a partially signed release.
+    fingerprint = crypto.recipient_fingerprint(recipient)
+    signed = metadata_verifier.verify(metadata, source, signer, fingerprint, ciphertext_digest)
+    require(signed['manifests'] == digests, 'signed metadata differs from reviewed image digests')
     validate_chain(component, source, deployment, digests)
     # TemporaryDirectory is newly created and removed by this process only;
     # it must have sufficient space for the plaintext and extracted OCI files.
@@ -99,7 +106,6 @@ def promote(component, source, deployment, signer, uid, old, ciphertext, ciphert
         base = Path(scratch)
         plaintext = base / 'release.tar'
         crypto.decrypt(ciphertext, plaintext, key, recipient, source, signer, ciphertext_digest, digests)
-        fingerprint = crypto.recipient_fingerprint(recipient)
         extracted = base / 'images'
         env.inspect(plaintext, source, fingerprint, digests, extracted, verify_oci=True)
         image = extracted / env.FILES[component]
@@ -123,7 +129,7 @@ def promote(component, source, deployment, signer, uid, old, ciphertext, ciphert
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('component', choices=('cms', 'ssr'))
-    for name in ('source', 'deployment', 'signer', 'uid', 'old', 'ciphertext', 'ciphertext_digest', 'key', 'recipient'):
+    for name in ('source', 'deployment', 'signer', 'uid', 'old', 'metadata', 'ciphertext', 'ciphertext_digest', 'key', 'recipient'):
         parser.add_argument('--' + name.replace('_', '-'), required=True)
     for component in env.COMPONENTS:
         parser.add_argument('--' + component + '-manifest', required=True)
@@ -132,7 +138,7 @@ def main():
     args = parser.parse_args()
     try:
         promote(args.component, args.source, args.deployment, args.signer, args.uid, args.old,
-                args.ciphertext, args.ciphertext_digest, args.key, args.recipient,
+                args.metadata, args.ciphertext, args.ciphertext_digest, args.key, args.recipient,
                 {n: getattr(args, n + '_manifest') for n in env.COMPONENTS}, args.copy, args.apply)
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, policy.yaml.YAMLError) as exc:
         print(f'Encrypted promotion candidate failed: {exc}', file=sys.stderr)

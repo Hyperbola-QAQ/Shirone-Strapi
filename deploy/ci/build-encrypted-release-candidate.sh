@@ -46,4 +46,16 @@ reconciler=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["rec
 python3 deploy/ci/encrypted-release-candidate.py encrypt --plaintext "$scratch/envelope.tar" \
   --ciphertext "$ciphertext" --recipient "$recipient" --source "$commit" \
   --cms-manifest "$cms" --ssr-manifest "$ssr" --reconciler-manifest "$reconciler" >/dev/null
-printf 'sha256:%s\n' "$(sha256sum "$ciphertext" | cut -d' ' -f1)"
+ciphertext_hash="sha256:$(sha256sum "$ciphertext" | cut -d' ' -f1)"
+# These non-secret identities must themselves be attested; workflow logs alone
+# are not an authorization source. Emit exactly one strict JSON object.
+python3 - "$commit" "$fingerprint" "$ciphertext_hash" "$cms" "$ssr" "$reconciler" <<'PY'
+import json,re,sys
+commit,recipient,ciphertext,*manifests = sys.argv[1:]
+assert re.fullmatch(r'[0-9a-f]{40}', commit)
+assert all(re.fullmatch(r'sha256:[0-9a-f]{64}', value) for value in [recipient,ciphertext,*manifests])
+print(json.dumps({'schema': 1, 'source_commit': commit, 'recipient_fingerprint': recipient,
+                  'ciphertext_digest': ciphertext,
+                  'manifests': dict(zip(('cms','ssr','reconciler'), manifests))},
+                 sort_keys=True, separators=(',', ':')))
+PY
