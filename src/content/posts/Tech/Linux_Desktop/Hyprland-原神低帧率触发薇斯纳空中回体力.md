@@ -1,9 +1,9 @@
 ---
 title: Hyprland 下的原神体验改善：用极低帧率触发薇斯纳空中回体力
 published: 2026-10-27
-updated: 2026-10-29
+updated: 2026-11-03
 pinned: false
-description: 在 Omarchy、Hyprland 与 DWProton 环境中验证低帧率触发薇斯纳空中回体力，记录 MangoHud 限帧切换的踩坑过程、配置重载会复位 HUD 状态的问题，以及 Hyprland Lua 配置的写法。
+description: 在 Omarchy、Hyprland 与 DWProton 环境中验证低帧率触发薇斯纳空中回体力，记录 MangoHud 限帧切换的踩坑过程、配置重载会复位 HUD 状态的问题、全局快捷键被合成器无条件消费的问题，以及 Hyprland Lua 配置的写法。
 image: "https://upload-bbs.miyoushe.com/upload/2026/10/22/291110358/dfa6368d10bca0336eec4ba9d8f45678_8134309817149677466.jpg?x-oss-process=image//resize,s_600/quality,q_80/auto-orient,0/interlace,1/format,jpg"
 tags: [Linux, Omarchy, Hyprland, Wine, 原神, MangoHud]
 category: Desktop
@@ -162,6 +162,44 @@ libx11->XQueryKeymap(get_xdisplay(), keys_return);
 
 仍保留约 1.2 秒的按键保持时间，是因为 1 FPS 下每秒才轮询一次按键。这是当前脚本的局限，**不能把它宣传成瞬时、完全顺滑的切换实现**。
 
+## Shift + F12 把按键从别的应用手里抢走了
+
+这套配置用了几天之后，暴露了一个和限帧无关的问题：在 CS2 里按 Shift + F12 关不掉 MangoHud。
+
+原因不在游戏，也不在 MangoHud。`o.bind` 最终落到 `hl.bind`，是标准的 Hyprland 绑定——命中之后由合成器消费按键，不再下发给客户端。脚本内部用 `hyprctl clients` 判断“当前是不是原神窗口”，但到那一步已经太晚了：**脚本能决定要不要干活，决定不了按键要不要交给游戏。**
+
+改完之后查询运行时绑定（`hyprctl binds -j`，节选），这条带上了消费策略：
+
+```json
+{
+  "modmask": 1,
+  "key": "F12",
+  "auto_consuming": true,
+  "dispatcher": "function: 0x556aee535eb0",
+  "description": "原神：切换 MangoHud 显示"
+}
+```
+
+改之前 `auto_consuming` 是 `false`，`dispatcher` 是 `HL.Dispatcher(exec_cmd)`。也就是说，任何窗口有焦点时按下这组键，都只会去执行那个脚本，然后脚本发现不是原神就 `exit 0`——按键消失了，游戏那边什么也没发生。这套绑定在 0.57.0 上依然如此，结论不变（本文其余部分的实测环境仍是 0.56.2）。
+
+修法和 F9 一致：把窗口判断从脚本提前到 dispatcher 函数里，用返回值告诉合成器这一下要不要消费。
+
+```lua
+-- 原来：无条件消费，判断放在脚本里已经来不及
+o.bind("SHIFT + F12", "原神：切换 MangoHud 显示", toggle_fps_command .. " hud")
+
+-- 现在：判断提前到 dispatcher，非原神窗口返回 ok = false
+o.bind("SHIFT + F12", "原神：切换 MangoHud 显示", toggle_hud, { auto_consuming = true })
+```
+
+`toggle_hud` 与 `toggle_fps` 同构，完整写法见下一节的最终配置。原神窗口内行为不变：判断通过、执行脚本、消费按键；其他窗口返回 `{ ok = false }`，按键原样下发给当前客户端。
+
+两点边界要单独说清楚。
+
+**第一，按键透传和 HUD 响应是两件事。** 这次只验证到按键会交给客户端，没有验证 CS2 里 MangoHud 是否真的响应。原神走 XWayland，MangoHud 用 `XQueryKeymap` 轮询 X 服务器的键位状态，这条路径是确定的；CS2 自带 `libSDL3.so.0`，在 Wayland 会话下大概率是原生 Wayland 窗口，MangoHud 0.8.4 面对这种情况走的是另一套键盘实现（自建 `wl_seat`、`wl_keyboard` 加独立事件队列），没有验证过。如果放行之后依然关不掉，那就不再是绑定层的问题了。
+
+**第二，MangoHud 的默认键是右 Shift。** `toggle_hud` 默认值是 `Shift_R+F12`，本文一直写“Shift + F12”是简称。左 Shift 从来不在默认绑定里，而 Hyprland 的 `SHIFT` 左右都匹配——所以在修掉消费问题之前，按哪边都一样没用。
+
 # 最终保留的配置
 
 Hyprland 只负责“接到按键、判断窗口、把活派出去”，真正改帧率的是 MangoHud。整条链路横跨合成器、shell、X 服务器和游戏进程四层，先看全景：
@@ -175,8 +213,8 @@ flowchart TB
     end
 
     subgraph HYPR["Hyprland 0.56.2（Lua）"]
-        BIND["o.bind(..., release = true)"]
-        CHECK{"hl.get_active_window()<br/>class == steam_proton<br/>且 title == 原神"}
+        BIND["o.bind(..., auto_consuming = true)"]
+        CHECK{"hl.get_active_window()<br/>class == steam_proton<br/>且 title 为 原神 / MaskWindow"}
         PASS["把按键交回原应用"]
         DISPATCH["hl.dsp.exec_cmd()<br/>异步派发，不阻塞合成器"]
     end
@@ -206,14 +244,16 @@ flowchart TB
 
     K --> BIND
     MOUSE --> BIND
+    HUD --> BIND
     BIND --> CHECK
     CHECK -->|"不匹配"| PASS
     CHECK -->|"匹配"| DISPATCH
-    DISPATCH --> LOCK --> GUARD --> WRITE --> XTEST
-    XTEST --> KEYMAP --> POLL --> RELOAD --> LIMITER --> RESULT
-
-    HUD --> HUDWRITE
+    DISPATCH --> LOCK --> GUARD
+    GUARD -->|"无参数"| WRITE
+    GUARD -->|"带 hud"| HUDWRITE
+    WRITE --> XTEST
     HUDWRITE --> XTEST
+    XTEST --> KEYMAP --> POLL --> RELOAD --> LIMITER --> RESULT
 ```
 
 链路里有两处容易被忽略的取舍，图上看不出来，要单独说明：
@@ -264,7 +304,7 @@ hl.config({ misc = { render_unfocused_fps = 30 } })
 -- 两个输入入口共用一个处理函数和注册循环。
 local function toggle_fps()
   local window = hl.get_active_window()
-  if window and window.class == "steam_proton" and window.title == "原神" then
+  if window and window.class == "steam_proton" and (window.title == "原神" or window.title == "MaskWindow") then
     hl.dispatch(hl.dsp.exec_cmd(toggle_fps_command))
     return { ok = true }
   else
@@ -277,12 +317,25 @@ for _, keys in ipairs({ "SUPER + F9", "mouse:275" }) do
 end
 
 -- HUD 可见性走同一个脚本：先写回配置再重载，重载就不会改变选择。
-o.bind("SHIFT + F12", "原神：切换 MangoHud 显示", toggle_fps_command .. " hud")
+local function toggle_hud()
+  local window = hl.get_active_window()
+  if window and window.class == "steam_proton" and (window.title == "原神" or window.title == "MaskWindow") then
+    hl.dispatch(hl.dsp.exec_cmd(toggle_fps_command .. " hud"))
+    return { ok = true }
+  else
+    return { ok = false }
+  end
+end
+
+-- auto_consuming：只在匹配到原神窗口时消费按键，其余窗口透传。
+o.bind("SHIFT + F12", "原神：切换 MangoHud 显示", toggle_hud, { auto_consuming = true })
 ```
 
 这是针对本机窗口标题、class 和 Omarchy `o.bind` 辅助函数的示例。直接使用 Hyprland 的环境需要改用自己的加载方式或 `hl.bind`，不能假设存在 `o`。
 
 两个输入入口并不是把两个按键合成一个绑定，而是共用同一个处理函数——改一次条件判断，两个入口同时生效。侧键只在匹配到游戏窗口时消费，其他应用保留原有后退行为。`mouse:275` 是本机的后退侧键编号，其他硬件应检查实际事件。
+
+条件里的 `MaskWindow` 是 BetterGI 的透明遮罩窗口。它被设成 `no_focus`，正常情况下不会成为活动窗口，所以这个分支很少真正命中，属于兜底。
 
 后台上限在最初对照实验中使用的是 60 FPS，最终文件保留为 30 FPS。这个参数是全局的，也会影响其他启用了 `render_unfocused` 的隐藏窗口。
 
