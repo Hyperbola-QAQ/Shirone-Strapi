@@ -17,6 +17,21 @@ private registry data or unrelated host configuration.
 
 ## Known inputs and desired behavior
 
+`rebuild-hosted-bases-candidate.sh` combines the pinned domestic-mirror parents,
+the independently checksum-pinned Node executable and the CA overlay candidate
+into disposable local Node and PostgreSQL images. It checks linux/amd64, the
+expected PostgreSQL overlay counts, versions and the sorted TLS-root-set hashes
+previously measured from the production bases; the reported IDs belong to the
+newly built images and are never represented as the production manifest digests.
+On 2026-11-03, a clean temporary Git clone reconstructed both inputs, verified
+their image IDs, built and imported three OCI archives with
+`build-tested-oci-candidate.sh`, and passed the complete disposable Strapi,
+search, admin-media and recovery integration suite. The locally cached pinned
+Meilisearch image was used for that test. This is local evidence, not an actual
+GitHub-hosted run; full filesystem/xattr equality, hosted mirror availability,
+signed provenance and rollback remain unverified. Neither script authorizes a
+release or changes production.
+
 `rebuild-node-candidate.sh` implements only a local Node executable replacement
 experiment. It requires a pre-downloaded archive, verifies both the fixed
 archive and executable SHA-256, and only builds from an already available
