@@ -65,6 +65,7 @@ class ArchiveTests(unittest.TestCase):
         manifest_digest = self.create()
         result = module.verify(self.path)
         self.assertEqual(result['manifest_digest'], manifest_digest)
+        self.assertEqual(result['config_digest'], self.config_desc['digest'])
         self.assertEqual(result['archive_digest'], 'sha256:' + hashlib.sha256(self.path.read_bytes()).hexdigest())
         self.assertNotEqual(result['archive_digest'], manifest_digest)
 
