@@ -19,6 +19,7 @@ spec.loader.exec_module(module)
 SOURCE = 'a' * 40
 RECIPIENT = 'sha256:' + 'b' * 64
 MANIFEST = 'sha256:' + 'c' * 64
+REAL_OCI_VERIFY = module.oci.verify
 
 
 def fake_oci(path):
@@ -92,6 +93,22 @@ class EnvelopeTests(unittest.TestCase):
     def test_replaced_archive_rejected(self):
         self.alter(lambda es: [(n, v[:-1] + b'X' if n == 'cms.oci.tar' else v) for n, v in es])
         with self.assertRaises(ValueError): module.inspect(self.envelope, SOURCE, RECIPIENT, self.expected)
+
+    def test_self_consistent_forged_archive_rejected_by_real_oci_verifier(self):
+        forged = b'not an OCI archive despite a matching envelope hash'
+        def edit(entries):
+            metadata = json.loads(dict(entries)['release.json'])
+            metadata['components']['cms']['archive_digest'] = 'sha256:' + hashlib.sha256(forged).hexdigest()
+            metadata['components']['cms']['size'] = len(forged)
+            return [(n, json.dumps(metadata).encode() if n == 'release.json' else forged if n == 'cms.oci.tar' else v)
+                    for n, v in entries]
+        self.alter(edit)
+        # Metadata and byte hash are internally consistent; only checking the
+        # actual OCI layout detects the forged manifest assertion.
+        module.inspect(self.envelope, SOURCE, RECIPIENT, self.expected)
+        with patch.object(module.oci, 'verify', side_effect=REAL_OCI_VERIFY):
+            with self.assertRaises((ValueError, tarfile.TarError)):
+                module.inspect(self.envelope, SOURCE, RECIPIENT, self.expected, verify_oci=True)
 
     def test_duplicate_path_rejected(self):
         self.alter(lambda es: es + [es[0]])

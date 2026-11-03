@@ -15,6 +15,7 @@ import stat
 import sys
 import tarfile
 import io
+import tempfile
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('oci_candidate', HERE / 'verify-oci-archive-candidate.py')
@@ -120,7 +121,7 @@ def no_duplicates(pairs):
     return out
 
 
-def inspect(envelope, source, recipient, expected_manifests, destination=None):
+def inspect(envelope, source, recipient, expected_manifests, destination=None, verify_oci=False):
     check_identity(source, recipient)
     require(set(expected_manifests) == set(COMPONENTS) and
             all(DIGEST.fullmatch(expected_manifests[n]) for n in COMPONENTS), 'three expected manifest digests required')
@@ -154,6 +155,20 @@ def inspect(envelope, source, recipient, expected_manifests, destination=None):
                     item['manifest_digest'] == expected_manifests[name], 'unexpected component identity')
             with tar.extractfile(seen[FILES[name]]) as stream:
                 require(hash_stream(stream) == item['archive_digest'], 'archive digest mismatch')
+            if verify_oci:
+                # An unlinked, mode-0600 temporary file lets the OCI verifier
+                # inspect the actual embedded archive, not metadata supplied by
+                # the envelope. It is closed on all paths and never published.
+                with tempfile.TemporaryFile(mode='w+b') as scratch, tar.extractfile(seen[FILES[name]]) as stream:
+                    copied = hashlib.sha256()
+                    for block in iter(lambda: stream.read(1024 * 1024), b''):
+                        scratch.write(block)
+                        copied.update(block)
+                    scratch.flush()
+                    require('sha256:' + copied.hexdigest() == item['archive_digest'], 'archive changed during OCI verification')
+                    image = oci.verify(f'/proc/self/fd/{scratch.fileno()}')
+                    require(image['archive_digest'] == item['archive_digest'] and
+                            image['manifest_digest'] == expected_manifests[name], 'embedded OCI identity mismatch')
         if destination is None:
             return metadata
         # Create a new private directory exclusively. Never touch an existing

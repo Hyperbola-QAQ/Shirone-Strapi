@@ -2,11 +2,14 @@
 """Offline age integration tests. The GH verifier here is explicitly a mock."""
 import hashlib
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -74,6 +77,28 @@ class EncryptionTests(unittest.TestCase):
         self.assertEqual(self.plain.read_bytes(), self.output.read_bytes())
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o600)
 
+    def test_encrypt_rejects_forged_embedded_oci_manifest_before_output(self):
+        forged = b'forged OCI archive'
+        with tarfile.open(self.plain, 'r:') as source:
+            entries = [(item.name, source.extractfile(item).read()) for item in source]
+        metadata = json.loads(dict(entries)['release.json'])
+        metadata['components']['cms']['size'] = len(forged)
+        metadata['components']['cms']['archive_digest'] = 'sha256:' + hashlib.sha256(forged).hexdigest()
+        with tarfile.open(self.plain, 'w') as target:
+            for name, data in entries:
+                data = json.dumps(metadata).encode() if name == 'release.json' else forged if name == 'cms.oci.tar' else data
+                info = tarfile.TarInfo(name); info.size = len(data)
+                target.addfile(info, io.BytesIO(data))
+        def actual_identity(path):
+            content = Path(path).read_bytes()
+            return {'archive_digest': 'sha256:' + hashlib.sha256(content).hexdigest(),
+                    'manifest_digest': 'sha256:' + ('d' if content == forged else 'c') * 64}
+        target = self.dir / 'forged.age'
+        with patch.object(module.envelope.oci, 'verify', side_effect=actual_identity):
+            with self.assertRaisesRegex(ValueError, 'embedded OCI identity mismatch'):
+                module.encrypt(self.plain, target, self.recipient, SOURCE, self.manifests)
+        self.assertFalse(target.exists())
+
     def test_verifier_receives_all_fixed_identity_guards(self):
         capture = self.dir / 'gh-arguments'
         self.gh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CI_GH_CAPTURE"\nexit 0\n')
@@ -109,6 +134,7 @@ class EncryptionTests(unittest.TestCase):
         self.mock_gh(0)
         with self.assertRaisesRegex(ValueError, 'cryptographic operation failed'):
             self.decrypt(key=self.other_key)
+        self.assertFalse(self.output.exists())
 
     def test_truncated_ciphertext_fails_real_age(self):
         self.mock_gh(0)
@@ -116,6 +142,7 @@ class EncryptionTests(unittest.TestCase):
         digest = 'sha256:' + hashlib.sha256(self.cipher.read_bytes()).hexdigest()
         with self.assertRaisesRegex(ValueError, 'cryptographic operation failed'):
             self.decrypt(digest=digest)
+        self.assertFalse(self.output.exists())
 
     def test_same_size_ciphertext_tampering_fails_real_age(self):
         self.mock_gh(0)
@@ -125,10 +152,12 @@ class EncryptionTests(unittest.TestCase):
         digest = 'sha256:' + hashlib.sha256(content).hexdigest()
         with self.assertRaisesRegex(ValueError, 'cryptographic operation failed'):
             self.decrypt(digest=digest)
+        self.assertFalse(self.output.exists())
 
     def test_stale_source_rejected_after_mock_attestation(self):
         self.mock_gh(0)
         with self.assertRaises(ValueError): self.decrypt(source='d' * 40)
+        self.assertFalse(self.output.exists())
 
     def test_world_readable_identity_rejected(self):
         self.mock_gh(0)
@@ -141,6 +170,14 @@ class EncryptionTests(unittest.TestCase):
         self.output.write_bytes(b'user data')
         with self.assertRaises(FileExistsError): self.decrypt()
         self.assertEqual(self.output.read_bytes(), b'user data')
+
+    def test_cleanup_never_unlinks_a_replaced_existing_file(self):
+        fd, directory, name = module.private_output(self.output)
+        moved = self.dir / 'moved-partial'
+        self.output.rename(moved)
+        self.output.write_bytes(b'user replacement')
+        module.finish_output(fd, directory, name, False)
+        self.assertEqual(self.output.read_bytes(), b'user replacement')
 
 
 if __name__ == '__main__':

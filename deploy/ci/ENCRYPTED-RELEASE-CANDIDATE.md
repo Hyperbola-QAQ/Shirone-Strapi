@@ -93,14 +93,21 @@ decrypt path requires an expected ciphertext hash and invokes `gh attestation
 verify` with fixed repository/workflow/ref and explicit source and signer
 commits before opening the private identity or creating a plaintext output.
 It then runs `age`, waits for successful authenticated decryption and checks
-envelope identities. The identity file and output directory must be private;
-failures may leave a newly created private partial output and return nonzero.
-This program never generates keys, invokes deployment or removes caller files.
+the actual embedded OCI archives, descriptors and diff IDs instead of trusting
+the envelope's manifest claims. Encryption performs the same check before
+creating output. Verification uses unlinked temporary files that can require
+substantial disk space and may leave filesystem or swap traces.
+The identity file and output directory must be private. On a handled failure,
+the program removes only the newly created output inode if its identity still
+matches; it does not overwrite existing data or remove a replacement file.
+Crashes, termination, cleanup errors or a path replacement may leave partial
+private data that an operator must inspect and clean. It never generates keys
+or invokes deployment.
 It assumes independently trusted `gh` and `age` executables and a separately
 reviewed signer revision. Real age success, wrong-key, truncation and tampering
 tests passed offline using temporary test keys; the GH verifier was a test
 stub, so **no real attestation or end-to-end authorization has been tested**.
-Further OCI extraction and validation are still required after decryption.
+Extraction and its independent OCI validation are still required after decryption.
 
 Download the exact expected run artifact, then **verify the ciphertext
 attestation before decrypting** with `gh attestation verify`, enforcing the

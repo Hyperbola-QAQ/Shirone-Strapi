@@ -72,11 +72,35 @@ def private_key_fd(path):
 
 
 def private_output(path):
-    parent = Path(path).absolute().parent
-    st = parent.lstat()
-    require(stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and
-            stat.S_IMODE(st.st_mode) & 0o077 == 0, 'output parent must be a caller-owned private directory')
-    return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    target = Path(path).absolute()
+    directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        st = os.fstat(directory)
+        require(st.st_uid == os.geteuid() and stat.S_IMODE(st.st_mode) & 0o077 == 0,
+                'output parent must be a caller-owned private directory')
+        fd = os.open(target.name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=directory)
+        return fd, directory, target.name
+    except Exception:
+        os.close(directory)
+        raise
+
+
+def finish_output(fd, directory, name, success):
+    try:
+        if not success:
+            # Remove only the inode created with O_EXCL by this invocation.
+            # The private directory is held open to avoid path re-resolution.
+            try:
+                original = os.fstat(fd)
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == (original.st_dev, original.st_ino):
+                    os.unlink(name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(fd)
+        os.close(directory)
 
 
 def run_silent(argv, **kwargs):
@@ -100,20 +124,20 @@ def encrypt(plaintext, ciphertext, recipient, source, expected_manifests):
     fd = input_fd(plaintext, envelope.MAX_TOTAL + 1024 * 1024)
     try:
         before = fd_hash(fd)
-        # No extraction here. OCI files were inspected during envelope build;
-        # explicit expected manifest identities prevent selecting a stale build.
-        envelope.inspect(fd, source, fingerprint, expected_manifests)
+        # Inspect the actual embedded OCI archives; envelope metadata alone
+        # cannot establish the image or layer identities.
+        envelope.inspect(fd, source, fingerprint, expected_manifests, verify_oci=True)
         require(fd_hash(fd) == before, 'plaintext changed during inspection')
-        output = private_output(ciphertext)
+        output, directory, name = private_output(ciphertext)
+        success = False
         try:
-            with os.fdopen(output, 'wb') as out:
+            with os.fdopen(os.dup(output), 'wb') as out:
                 run_silent(['age', '--encrypt', '--recipient', recipient], stdin=fd, stdout=out, pass_fds=(fd,))
-        except Exception:
-            # Never delete a caller file, including a partial output; the new
-            # private output must be inspected/removed by its owner.
-            raise
-        require(fd_hash(fd) == before, 'plaintext changed during encryption')
-        return before
+            require(fd_hash(fd) == before, 'plaintext changed during encryption')
+            success = True
+            return before
+        finally:
+            finish_output(output, directory, name, success)
     finally:
         os.close(fd)
 
@@ -129,16 +153,20 @@ def decrypt(ciphertext, plaintext, key, recipient, source, signer, ciphertext_di
         # Key and output are opened only after the signed ciphertext passed.
         keyfd = private_key_fd(key)
         try:
-            output = private_output(plaintext)
-            with os.fdopen(output, 'wb') as out:
-                run_silent(['age', '--decrypt', '--identity', f'/proc/self/fd/{keyfd}'],
-                           stdin=fd, stdout=out, pass_fds=(fd, keyfd))
+            output, directory, name = private_output(plaintext)
+            success = False
+            try:
+                with os.fdopen(os.dup(output), 'wb') as out:
+                    run_silent(['age', '--decrypt', '--identity', f'/proc/self/fd/{keyfd}'],
+                               stdin=fd, stdout=out, pass_fds=(fd, keyfd))
+                require(fd_hash(fd) == ciphertext_digest, 'ciphertext changed during decryption')
+                # Check the same inode written by age, never a replaced path.
+                envelope.inspect(output, source, fingerprint, expected_manifests, verify_oci=True)
+                success = True
+            finally:
+                finish_output(output, directory, name, success)
         finally:
             os.close(keyfd)
-        require(fd_hash(fd) == ciphertext_digest, 'ciphertext changed during decryption')
-        # age must finish successfully before parsing any plaintext. Inspection
-        # does not extract OCI content and is not itself release authorization.
-        envelope.inspect(plaintext, source, fingerprint, expected_manifests)
         return 'Verified attestation, complete age decryption and envelope identities; OCI extraction/validation remains required.'
     finally:
         os.close(fd)
