@@ -46,6 +46,9 @@ class WorkflowTests(unittest.TestCase):
         steps = sign['steps']
         self.assertFalse(any('checkout@' in step.get('uses', '') for step in steps))
         self.assertTrue(any('sha256sum' in step.get('run', '') for step in steps))
+        download = next(s for s in steps if 'actions/download-artifact@' in s.get('uses', ''))
+        self.assertEqual(download['with']['merge-multiple'], 'true')
+        self.assertIn('ARTIFACT_ID', download['with']['artifact-ids'])
         attest = [s for s in steps if 'actions/attest@' in s.get('uses', '')]
         self.assertEqual(len(attest), 2)
         self.assertEqual({s['with']['subject-path'].split('/')[-1] for s in attest}, {'release.age', 'metadata.json'})

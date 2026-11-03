@@ -4,7 +4,8 @@ ARG NODE_IMAGE=node:22-bookworm-slim
 FROM ${NODE_IMAGE} AS build
 WORKDIR /opt/app
 ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com/
-RUN npm install -g pnpm@12.16.1
+COPY scripts/install-pinned-pnpm.sh /tmp/install-pinned-pnpm.sh
+RUN sh /tmp/install-pinned-pnpm.sh && rm /tmp/install-pinned-pnpm.sh
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 COPY config ./config

@@ -94,6 +94,7 @@ jobs:
         with:
           artifact-ids: ${{ env.ARTIFACT_ID }}
           path: ${{ runner.temp }}/shirone-sign
+          merge-multiple: true
       - name: Check exact ciphertext
         env:
           GH_TOKEN: ${{ github.token }}

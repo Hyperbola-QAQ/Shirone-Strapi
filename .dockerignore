@@ -6,7 +6,10 @@ node_modules
 .content-src
 .content-backup
 dist
-cms
+cms/*
+!cms/scripts/
+cms/scripts/*
+!cms/scripts/install-pinned-pnpm.sh
 .env
 .env.*
 !.env.example

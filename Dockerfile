@@ -4,7 +4,8 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com/ \
     PNPM_CONFIG_REGISTRY=https://registry.npmmirror.com/
-RUN npm install --global pnpm@12.16.1
+COPY cms/scripts/install-pinned-pnpm.sh /tmp/install-pinned-pnpm.sh
+RUN sh /tmp/install-pinned-pnpm.sh && rm /tmp/install-pinned-pnpm.sh
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY patches ./patches
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
