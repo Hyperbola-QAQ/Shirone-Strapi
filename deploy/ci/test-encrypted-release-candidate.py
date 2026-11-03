@@ -17,6 +17,7 @@ SCRIPT = Path(__file__).with_name('encrypted-release-candidate.py')
 spec = importlib.util.spec_from_file_location('encrypted_release', SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+REAL_OCI_VERIFY = module.envelope.oci.verify
 SOURCE = 'a' * 40
 SIGNER = 'b' * 40
 MANIFEST = 'sha256:' + 'c' * 64
@@ -76,6 +77,24 @@ class EncryptionTests(unittest.TestCase):
         self.decrypt()
         self.assertEqual(self.plain.read_bytes(), self.output.read_bytes())
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o600)
+
+    def test_real_oci_and_age_roundtrip_after_mock_attestation(self):
+        fixture_spec = importlib.util.spec_from_file_location('oci_fixture', SCRIPT.with_name('test-verify-oci-archive-candidate.py'))
+        fixture_module = importlib.util.module_from_spec(fixture_spec)
+        fixture_spec.loader.exec_module(fixture_module)
+        fixture = fixture_module.ArchiveTests(methodName='test_valid_and_distinct_digests')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        actual_manifest = fixture.create()
+        actual_expected = {name: actual_manifest for name in module.envelope.COMPONENTS}
+        source = self.dir / 'real-envelope.tar'; ciphertext = self.dir / 'real-envelope.age'; output = self.dir / 'real-decrypted.tar'
+        with patch.object(module.envelope.oci, 'verify', side_effect=REAL_OCI_VERIFY):
+            module.envelope.build(source, SOURCE, self.recipient_hash, {name: fixture.path for name in module.envelope.COMPONENTS})
+            module.encrypt(source, ciphertext, self.recipient, SOURCE, actual_expected)
+            digest = 'sha256:' + hashlib.sha256(ciphertext.read_bytes()).hexdigest()
+            self.mock_gh(0)
+            module.decrypt(ciphertext, output, self.key, self.recipient, SOURCE, SIGNER, digest, actual_expected)
+        self.assertEqual(source.read_bytes(), output.read_bytes())
 
     def test_encrypt_rejects_forged_embedded_oci_manifest_before_output(self):
         forged = b'forged OCI archive'
