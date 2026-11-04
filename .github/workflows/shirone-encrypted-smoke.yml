@@ -1,0 +1,159 @@
+# Manual test of small synthetic OCI archives; never deploy its output.
+name: Shirone encrypted OCI smoke test
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: shirone-encrypted-smoke
+  cancel-in-progress: false
+jobs:
+  build_test_encrypt:
+    if: github.repository == 'Hyperbola-QAQ/Shirone-Strapi' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      ciphertext_digest: ${{ steps.build.outputs.ciphertext_digest }}
+      metadata_digest: ${{ steps.build.outputs.metadata_digest }}
+    env:
+      SHIRONE_CI_DISPOSABLE: 'yes'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Require exact current main and reviewed recipient
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$(gh api repos/Hyperbola-QAQ/Shirone-Strapi/git/ref/heads/main --jq .object.sha)" == "$GITHUB_SHA" ]]
+          [[ -f deploy/ci/release-recipient.txt && ! -L deploy/ci/release-recipient.txt ]]
+          recipient=$(cat deploy/ci/release-recipient.txt)
+          [[ "$recipient" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$ ]]
+          [[ "$(wc -l < deploy/ci/release-recipient.txt)" -eq 1 ]]
+      - name: Install checksum-pinned tools
+        run: |
+          set -euo pipefail
+          age_bin=$(bash deploy/ci/install-age-candidate.sh "$RUNNER_TEMP/shirone-age")
+          mkdir -m 700 "$RUNNER_TEMP/shirone-age-bin"
+          ln -s "$age_bin" "$RUNNER_TEMP/shirone-age-bin/age"
+          printf '%s\n' "$RUNNER_TEMP/shirone-age-bin" >> "$GITHUB_PATH"
+      - name: Build three synthetic OCI archives and encrypt
+        id: build
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 700 "$RUNNER_TEMP/shirone-release"
+          recipient=$(cat deploy/ci/release-recipient.txt)
+          scratch=$(mktemp -d "$RUNNER_TEMP/shirone-smoke.XXXXXX")
+          trap 'find "$scratch" -depth -delete' EXIT
+          mkdir "$scratch/context"
+          printf 'FROM scratch\nCOPY marker /marker\n' > "$scratch/context/Dockerfile"
+          for component in cms ssr reconciler; do
+            printf 'synthetic smoke component %s\n' "$component" > "$scratch/context/marker"
+            docker buildx build --platform linux/amd64 --provenance=false --file "$scratch/context/Dockerfile" --tag "shirone-smoke-$component:local" --output "type=oci,dest=$scratch/$component.oci.tar" "$scratch/context" >/dev/null
+          done
+          fingerprint=$(python3 -c 'import hashlib,sys; print("sha256:"+hashlib.sha256(sys.argv[1].encode("ascii")).hexdigest())' "$recipient")
+          python3 deploy/ci/release-envelope-candidate.py build "$scratch/envelope.tar" --source "$GITHUB_SHA" --recipient "$fingerprint" --cms "$scratch/cms.oci.tar" --ssr "$scratch/ssr.oci.tar" --reconciler "$scratch/reconciler.oci.tar" > "$scratch/envelope.json"
+          cms=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["cms"]["manifest_digest"])' "$scratch/envelope.json")
+          ssr=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["ssr"]["manifest_digest"])' "$scratch/envelope.json")
+          reconciler=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["reconciler"]["manifest_digest"])' "$scratch/envelope.json")
+          python3 deploy/ci/encrypted-release-candidate.py encrypt --plaintext "$scratch/envelope.tar" --ciphertext "$RUNNER_TEMP/shirone-release/release.age" --recipient "$recipient" --source "$GITHUB_SHA" --cms-manifest "$cms" --ssr-manifest "$ssr" --reconciler-manifest "$reconciler" >/dev/null
+          python3 - "$RUNNER_TEMP/shirone-release/release.age" "$RUNNER_TEMP/shirone-release/metadata.json" "$GITHUB_SHA" "$fingerprint" "$cms" "$ssr" "$reconciler" <<'PY'
+          import hashlib, json, sys
+          with open(sys.argv[1], 'rb') as f: digest = 'sha256:' + hashlib.file_digest(f, 'sha256').hexdigest()
+          data = {'schema': 1, 'source_commit': sys.argv[3], 'recipient_fingerprint': sys.argv[4], 'ciphertext_digest': digest, 'manifests': dict(zip(('cms','ssr','reconciler'), sys.argv[5:8]))}
+          with open(sys.argv[2], 'x', encoding='utf-8') as f: json.dump(data, f, sort_keys=True)
+          PY
+          digest=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["schema"]==1 and d["source_commit"]==sys.argv[2]; print(d["ciphertext_digest"])' "$RUNNER_TEMP/shirone-release/metadata.json" "$GITHUB_SHA")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "sha256:$(sha256sum "$RUNNER_TEMP/shirone-release/release.age" | cut -d' ' -f1)" == "$digest" ]]
+          metadata_digest="sha256:$(sha256sum "$RUNNER_TEMP/shirone-release/metadata.json" | cut -d' ' -f1)"
+          printf 'ciphertext_digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          printf 'metadata_digest=%s\n' "$metadata_digest" >> "$GITHUB_OUTPUT"
+      - name: Upload only encrypted release
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shirone-encrypted-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shirone-release/release.age
+            ${{ runner.temp }}/shirone-release/metadata.json
+          if-no-files-found: error
+          retention-days: 1
+  sign:
+    needs: build_test_encrypt
+    if: needs.build_test_encrypt.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    env:
+      ARTIFACT_ID: ${{ needs.build_test_encrypt.outputs.artifact_id }}
+      CIPHERTEXT_DIGEST: ${{ needs.build_test_encrypt.outputs.ciphertext_digest }}
+      METADATA_DIGEST: ${{ needs.build_test_encrypt.outputs.metadata_digest }}
+    steps:
+      - name: Validate expected artifact identity
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ && "$CIPHERTEXT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ && "$METADATA_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ env.ARTIFACT_ID }}
+          path: ${{ runner.temp }}/shirone-sign
+          merge-multiple: true
+      - name: Check exact ciphertext
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(find "$RUNNER_TEMP/shirone-sign" -type f | wc -l)" -eq 2 ]]
+          [[ -f "$RUNNER_TEMP/shirone-sign/release.age" && ! -L "$RUNNER_TEMP/shirone-sign/release.age" ]]
+          [[ -f "$RUNNER_TEMP/shirone-sign/metadata.json" && ! -L "$RUNNER_TEMP/shirone-sign/metadata.json" ]]
+          [[ "sha256:$(sha256sum "$RUNNER_TEMP/shirone-sign/release.age" | cut -d' ' -f1)" == "$CIPHERTEXT_DIGEST" ]]
+          [[ "sha256:$(sha256sum "$RUNNER_TEMP/shirone-sign/metadata.json" | cut -d' ' -f1)" == "$METADATA_DIGEST" ]]
+          gh api "repos/Hyperbola-QAQ/Shirone-Strapi/contents/deploy/ci/release-recipient.txt?ref=$GITHUB_SHA" > "$RUNNER_TEMP/shirone-recipient-api.json"
+          python3 - "$RUNNER_TEMP/shirone-sign/metadata.json" "$RUNNER_TEMP/shirone-recipient-api.json" <<'PY'
+          import base64, hashlib, json, os, re, sys
+          def unique(pairs):
+              result = {}
+              for k, v in pairs:
+                  if k in result: raise ValueError('duplicate metadata field')
+                  result[k] = v
+              return result
+          with open(sys.argv[1], 'rb') as f:
+              raw = f.read(16385)
+          if not 0 < len(raw) <= 16384: raise ValueError('invalid metadata size')
+          meta = json.loads(raw, object_pairs_hook=unique)
+          with open(sys.argv[2], 'rb') as f: item = json.load(f)
+          if item.get('type') != 'file' or item.get('encoding') != 'base64' or not 0 < item.get('size', 0) <= 128:
+              raise ValueError('invalid recipient source')
+          key_bytes = base64.b64decode(''.join(item['content'].split()), validate=True)
+          if len(key_bytes) != item['size'] or not key_bytes.endswith(b'\n') or key_bytes.count(b'\n') != 1:
+              raise ValueError('invalid recipient file')
+          key = key_bytes[:-1].decode('ascii')
+          if not re.fullmatch(r'age1[023456789acdefghjklmnpqrstuvwxyz]{58}', key): raise ValueError('invalid recipient')
+          expected = {'schema','source_commit','recipient_fingerprint','ciphertext_digest','manifests'}
+          if not isinstance(meta, dict) or set(meta) != expected or type(meta['schema']) is not int or meta['schema'] != 1:
+              raise ValueError('invalid metadata schema')
+          if meta['source_commit'] != os.environ['GITHUB_SHA'] or meta['ciphertext_digest'] != os.environ['CIPHERTEXT_DIGEST']:
+              raise ValueError('wrong source or ciphertext')
+          if meta['recipient_fingerprint'] != 'sha256:' + hashlib.sha256(key.encode('ascii')).hexdigest():
+              raise ValueError('wrong recipient')
+          images = meta['manifests']
+          if not isinstance(images, dict) or set(images) != {'cms','ssr','reconciler'} or not all(isinstance(v,str) and re.fullmatch(r'sha256:[0-9a-f]{64}',v) for v in images.values()):
+              raise ValueError('invalid image identities')
+          PY
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/shirone-sign/release.age
+          create-storage-record: false
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/shirone-sign/metadata.json
+          create-storage-record: false
