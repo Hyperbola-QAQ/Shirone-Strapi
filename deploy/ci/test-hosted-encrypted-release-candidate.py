@@ -30,6 +30,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(job['permissions'], {'contents': 'read'})
         steps = job['steps']
         self.assertEqual(steps[0]['with']['persist-credentials'], 'false')
+        builder = next(s for s in steps if s.get('name') == 'Prepare a digest-pinned OCI builder')
+        self.assertIn('setup-oci-builder-candidate.sh', builder['run'])
         build = next(s for s in steps if s.get('id') == 'build')
         self.assertIn('build-encrypted-release-candidate.sh', build['run'])
         self.assertIn('release-recipient.txt', build['run'])

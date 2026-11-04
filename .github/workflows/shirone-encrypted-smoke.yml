@@ -41,6 +41,8 @@ jobs:
           mkdir -m 700 "$RUNNER_TEMP/shirone-age-bin"
           ln -s "$age_bin" "$RUNNER_TEMP/shirone-age-bin/age"
           printf '%s\n' "$RUNNER_TEMP/shirone-age-bin" >> "$GITHUB_PATH"
+      - name: Prepare a digest-pinned OCI builder
+        run: bash deploy/ci/setup-oci-builder-candidate.sh "shirone-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Build three synthetic OCI archives and encrypt
         id: build
         run: |
