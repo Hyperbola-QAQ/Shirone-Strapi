@@ -45,6 +45,8 @@ jobs:
           mkdir -m 700 "$RUNNER_TEMP/shirone-age-bin"
           ln -s "$age_bin" "$RUNNER_TEMP/shirone-age-bin/age"
           printf '%s\n%s\n' "$node_bin" "$RUNNER_TEMP/shirone-age-bin" >> "$GITHUB_PATH"
+      - name: Enable OCI image store on the disposable runner
+        run: bash deploy/ci/setup-hosted-docker-store-candidate.sh
       - name: Prepare a digest-pinned OCI builder
         run: bash deploy/ci/setup-oci-builder-candidate.sh "shirone-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Build, test exact OCI images, and encrypt

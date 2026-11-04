@@ -30,6 +30,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(job['permissions'], {'contents': 'read'})
         steps = job['steps']
         self.assertEqual(steps[0]['with']['persist-credentials'], 'false')
+        store = next(s for s in steps if s.get('name') == 'Enable OCI image store on the disposable runner')
+        self.assertIn('setup-hosted-docker-store-candidate.sh', store['run'])
         builder = next(s for s in steps if s.get('name') == 'Prepare a digest-pinned OCI builder')
         self.assertIn('setup-oci-builder-candidate.sh', builder['run'])
         build = next(s for s in steps if s.get('id') == 'build')
