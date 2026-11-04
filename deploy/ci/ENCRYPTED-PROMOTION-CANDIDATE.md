@@ -63,3 +63,16 @@ the old running image, approved previous manifest, trusted last-known-good
 record and CMS schema compatibility require a separately reviewed recovery
 path. Do not automatically revert database migrations or treat a successful
 rollout status/HTTP 200 as proof of an application-complete release.
+
+On 2026-11-04, an isolated temporary Kubernetes namespace exercised the same
+JSON patch operations used by the CMS playbook against a disposable Deployment.
+It pulled the previously deployed and current CMS image digests, ran only a
+Node waiting process, verified server-side admission preview, rejected an
+incorrect UID, previous image and stale resourceVersion, and successfully
+rolled forward and back with the Deployment UID unchanged. Each rollout had
+one ready Pod with a reported imageID. The namespace was deleted afterward.
+This was a direct JSON-patch rehearsal, not an execution of the production
+Ansible wrapper: it did not verify application behavior, schema compatibility,
+actual production rollback, or compare the reported imageID to a resolved
+platform-specific manifest. Those remain required before claiming a verified
+production rollback.
