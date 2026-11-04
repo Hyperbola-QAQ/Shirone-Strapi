@@ -57,6 +57,12 @@ jobs:
           for component in cms ssr reconciler; do
             printf 'synthetic smoke component %s\n' "$component" > "$scratch/context/marker"
             docker buildx build --platform linux/amd64 --provenance=false --file "$scratch/context/Dockerfile" --tag "shirone-smoke-$component:local" --output "type=oci,dest=$scratch/$component.oci.tar" "$scratch/context" >/dev/null
+            python3 deploy/ci/verify-oci-archive-candidate.py "$scratch/$component.oci.tar" > "$scratch/$component.identity.json"
+            config=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["config_digest"])' "$scratch/$component.identity.json")
+            manifest=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["manifest_digest"])' "$scratch/$component.identity.json")
+            docker load --input "$scratch/$component.oci.tar" >/dev/null
+            actual=$(docker image inspect --format '{{.Id}}' "shirone-smoke-$component:local")
+            [[ "$actual" == "$config" || "$actual" == "$manifest" ]]
           done
           fingerprint=$(python3 -c 'import hashlib,sys; print("sha256:"+hashlib.sha256(sys.argv[1].encode("ascii")).hexdigest())' "$recipient")
           python3 deploy/ci/release-envelope-candidate.py build "$scratch/envelope.tar" --source "$GITHUB_SHA" --recipient "$fingerprint" --cms "$scratch/cms.oci.tar" --ssr "$scratch/ssr.oci.tar" --reconciler "$scratch/reconciler.oci.tar" > "$scratch/envelope.json"
