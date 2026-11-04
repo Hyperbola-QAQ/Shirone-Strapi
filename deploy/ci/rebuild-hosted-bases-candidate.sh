@@ -27,6 +27,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+echo 'SHIRONE_STAGE=base_pull' >&2
 for image in "$node_parent" "$pg_parent"; do
   docker pull --platform linux/amd64 "$image" >/dev/null
   [[ "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" == linux/amd64 ]] || exit 1
@@ -36,6 +37,7 @@ done
 }
 
 node_archive="$scratch/node.tar.xz"
+echo 'SHIRONE_STAGE=node_download' >&2
 node_sha=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
 fetch_node() {
   curl --fail --silent --show-error --location --connect-timeout 15 --max-time 180 "$1" -o "$node_archive" &&
@@ -48,8 +50,10 @@ fi
 mkdir "$scratch/node-context"
 tar -xJOf "$node_archive" node-v22.23.4-linux-x64/bin/node > "$scratch/node-context/node"
 printf '%s  %s\n' 94efd062ed066c1a0b332e18249859c905e920eeada5df55d24c99b919629a90 "$scratch/node-context/node" | sha256sum --check --status
+echo 'SHIRONE_STAGE=node_base_build' >&2
 docker build --network=none --pull=false -f deploy/ci/Dockerfile.node-reconstruction-candidate -t "$node_tag" "$scratch/node-context" >/dev/null
 
+echo 'SHIRONE_STAGE=pg_base_build' >&2
 container=$(docker create "$pg_parent")
 docker export "$container" > "$scratch/pg-parent.tar"
 docker rm "$container" >/dev/null
@@ -69,6 +73,7 @@ USER 26
 EOF
 docker build --network=none --pull=false -t "$pg_tag" "$scratch/pg-context" >/dev/null
 
+echo 'SHIRONE_STAGE=base_checks' >&2
 [[ "$(docker run --rm --network none --entrypoint node "$node_tag" --version)" == v22.23.4 ]]
 [[ "$(docker run --rm --network none --entrypoint npm "$node_tag" --version)" == 10.9.9 ]]
 pg_version=$(docker run --rm --network none --entrypoint postgres "$pg_tag" --version)

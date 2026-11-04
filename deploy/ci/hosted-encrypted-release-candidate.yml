@@ -58,6 +58,7 @@ jobs:
           recipient=$(cat deploy/ci/release-recipient.txt)
           if ! bash deploy/ci/build-encrypted-release-candidate.sh "$GITHUB_SHA" "$recipient" "$RUNNER_TEMP/shirone-release/release.age" > "$RUNNER_TEMP/shirone-release/metadata.json" 2> "$RUNNER_TEMP/shirone-build-private.log"; then
             echo 'Build, integration or encryption failed; private logs are not uploaded.' >&2
+            python3 deploy/ci/report-ci-failure.py "$RUNNER_TEMP/shirone-build-private.log" >&2
             exit 1
           fi
           digest=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["schema"]==1 and d["source_commit"]==sys.argv[2]; print(d["ciphertext_digest"])' "$RUNNER_TEMP/shirone-release/metadata.json" "$GITHUB_SHA")

@@ -22,8 +22,10 @@ umask 077
 mkdir -m 700 "$output"
 [[ -d "$output" && ! -L "$output" ]] || exit 1
 
+echo 'SHIRONE_STAGE=dependency_install' >&2
 pnpm install --frozen-lockfile
 pnpm --dir cms install --frozen-lockfile
+echo 'SHIRONE_STAGE=source_tests' >&2
 pnpm build
 pnpm test
 pnpm check
@@ -40,6 +42,7 @@ cleanup() {
 }
 trap cleanup EXIT
 for component in cms ssr reconciler; do
+  echo "SHIRONE_STAGE=oci_$component" >&2
   case "$component" in
     cms) dockerfile=cms/Dockerfile; context=cms ;;
     ssr) dockerfile=Dockerfile; context=. ;;
@@ -64,11 +67,14 @@ done
 
 # Run the real integration suites by content-addressed image ID, not by a tag
 # another process could retarget. All inputs are local and disposable.
+echo 'SHIRONE_STAGE=integration_content' >&2
 SHIRONE_DISPOSABLE=yes CMS_TEST_IMAGE="${ids[cms]}" SSR_TEST_IMAGE="${ids[ssr]}" \
   POSTGRES_TEST_IMAGE="$POSTGRES_TEST_IMAGE" MEILI_TEST_IMAGE="$MEILI_TEST_IMAGE" \
   RECONCILER_TEST_IMAGE="${ids[reconciler]}" node deploy/tests/strapi-search-e2e.cjs
+echo 'SHIRONE_STAGE=integration_media' >&2
 SHIRONE_DISPOSABLE=yes CMS_TEST_IMAGE="${ids[cms]}" SSR_TEST_IMAGE="${ids[ssr]}" \
   POSTGRES_TEST_IMAGE="$POSTGRES_TEST_IMAGE" node deploy/tests/admin-media-e2e.cjs
+echo 'SHIRONE_STAGE=integration_recovery' >&2
 MEILI_DISPOSABLE=yes MEILI_TEST_IMAGE="$MEILI_TEST_IMAGE" node deploy/tests/meili-uncertain-recovery.cjs
 
 for component in cms ssr reconciler; do

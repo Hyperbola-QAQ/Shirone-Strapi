@@ -25,6 +25,7 @@ cleanup() {
   find "$scratch" -depth -delete
 }
 trap cleanup EXIT
+echo 'SHIRONE_STAGE=bases' >&2
 SHIRONE_CI_DISPOSABLE=yes bash deploy/ci/rebuild-hosted-bases-candidate.sh "$commit" "$scratch/bases" >&2
 node_tag=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["node_local_tag"])' "$scratch/bases/bases.json")
 pg_tag=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["postgres_local_tag"])' "$scratch/bases/bases.json")
@@ -32,17 +33,21 @@ node_id=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["node_i
 pg_id=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["postgres_image_id"])' "$scratch/bases/bases.json")
 [[ "$(docker image inspect --format '{{.Id}}' "$node_tag")" == "$node_id" && "$(docker image inspect --format '{{.Id}}' "$pg_tag")" == "$pg_id" ]]
 meili='docker.m.daocloud.io/getmeili/meilisearch@sha256:cad32322d74319f2076f41828094774fbbacacff6bda32e317933293b76db616'
+echo 'SHIRONE_STAGE=meili_pull' >&2
 docker pull --platform linux/amd64 "$meili" >/dev/null
+echo 'SHIRONE_STAGE=source_tests' >&2
 SHIRONE_CI_DISPOSABLE=yes NODE_IMAGE="$node_tag" POSTGRES_TEST_IMAGE="$pg_tag" MEILI_TEST_IMAGE="$meili" \
   bash deploy/ci/build-tested-oci-candidate.sh "$commit" "$scratch/images" >&2
 [[ "$(docker image inspect --format '{{.Id}}' "$node_tag")" == "$node_id" && "$(docker image inspect --format '{{.Id}}' "$pg_tag")" == "$pg_id" ]]
 fingerprint=$(python3 -c 'import hashlib,sys;print("sha256:"+hashlib.sha256(sys.argv[1].encode("ascii")).hexdigest())' "$recipient")
+echo 'SHIRONE_STAGE=envelope' >&2
 python3 deploy/ci/release-envelope-candidate.py build "$scratch/envelope.tar" \
   --source "$commit" --recipient "$fingerprint" --cms "$scratch/images/cms.oci.tar" \
   --ssr "$scratch/images/ssr.oci.tar" --reconciler "$scratch/images/reconciler.oci.tar" > "$scratch/envelope.json"
 cms=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["cms"]["manifest_digest"])' "$scratch/envelope.json")
 ssr=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["ssr"]["manifest_digest"])' "$scratch/envelope.json")
 reconciler=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["reconciler"]["manifest_digest"])' "$scratch/envelope.json")
+echo 'SHIRONE_STAGE=encrypt' >&2
 python3 deploy/ci/encrypted-release-candidate.py encrypt --plaintext "$scratch/envelope.tar" \
   --ciphertext "$ciphertext" --recipient "$recipient" --source "$commit" \
   --cms-manifest "$cms" --ssr-manifest "$ssr" --reconciler-manifest "$reconciler" >/dev/null
