@@ -1,0 +1,86 @@
+name: Shirone attestation smoke test
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: shirone-attestation-smoke
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.repository == 'Hyperbola-QAQ/Shirone-Strapi' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      payload_sha: ${{ steps.prepare.outputs.payload_sha }}
+      metadata_sha: ${{ steps.prepare.outputs.metadata_sha }}
+    steps:
+      - name: Prepare synthetic public test data
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          mkdir -m 700 "$RUNNER_TEMP/shirone-smoke"
+          printf 'shirone attestation smoke test\n' > "$RUNNER_TEMP/shirone-smoke/payload.txt"
+          payload_sha="$(sha256sum "$RUNNER_TEMP/shirone-smoke/payload.txt" | cut -d' ' -f1)"
+          printf '{"schema":1,"source_commit":"%s","payload_sha256":"%s"}\n' "$GITHUB_SHA" "$payload_sha" > "$RUNNER_TEMP/shirone-smoke/metadata.json"
+          metadata_sha="$(sha256sum "$RUNNER_TEMP/shirone-smoke/metadata.json" | cut -d' ' -f1)"
+          printf 'payload_sha=%s\nmetadata_sha=%s\n' "$payload_sha" "$metadata_sha" >> "$GITHUB_OUTPUT"
+      - name: Upload synthetic test files
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shirone-attestation-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/shirone-smoke/
+          if-no-files-found: error
+          retention-days: 1
+  sign:
+    needs: prepare
+    if: needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    env:
+      ARTIFACT_ID: ${{ needs.prepare.outputs.artifact_id }}
+      PAYLOAD_SHA: ${{ needs.prepare.outputs.payload_sha }}
+      METADATA_SHA: ${{ needs.prepare.outputs.metadata_sha }}
+    steps:
+      - name: Validate producer outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ && "$PAYLOAD_SHA" =~ ^[0-9a-f]{64}$ && "$METADATA_SHA" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ env.ARTIFACT_ID }}
+          path: ${{ runner.temp }}/shirone-smoke
+          merge-multiple: true
+      - name: Verify synthetic files and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(find "$RUNNER_TEMP/shirone-smoke" -type f | wc -l)" -eq 2 ]]
+          [[ -f "$RUNNER_TEMP/shirone-smoke/payload.txt" && ! -L "$RUNNER_TEMP/shirone-smoke/payload.txt" ]]
+          [[ -f "$RUNNER_TEMP/shirone-smoke/metadata.json" && ! -L "$RUNNER_TEMP/shirone-smoke/metadata.json" ]]
+          [[ "$(sha256sum "$RUNNER_TEMP/shirone-smoke/payload.txt" | cut -d' ' -f1)" == "$PAYLOAD_SHA" ]]
+          [[ "$(sha256sum "$RUNNER_TEMP/shirone-smoke/metadata.json" | cut -d' ' -f1)" == "$METADATA_SHA" ]]
+          python3 - "$RUNNER_TEMP/shirone-smoke/metadata.json" <<'PY'
+          import json, os, sys
+          with open(sys.argv[1], encoding='utf-8') as f:
+              data = json.load(f)
+          assert data == {'schema': 1, 'source_commit': os.environ['GITHUB_SHA'], 'payload_sha256': os.environ['PAYLOAD_SHA']}
+          PY
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/shirone-smoke/payload.txt
+          create-storage-record: false
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/shirone-smoke/metadata.json
+          create-storage-record: false
