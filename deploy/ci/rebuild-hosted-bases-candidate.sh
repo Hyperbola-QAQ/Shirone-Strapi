@@ -51,7 +51,20 @@ mkdir "$scratch/node-context"
 tar -xJOf "$node_archive" node-v22.23.4-linux-x64/bin/node > "$scratch/node-context/node"
 printf '%s  %s\n' 94efd062ed066c1a0b332e18249859c905e920eeada5df55d24c99b919629a90 "$scratch/node-context/node" | sha256sum --check --status
 echo 'SHIRONE_STAGE=node_base_build' >&2
-docker build --network=none --pull=false -f deploy/ci/Dockerfile.node-reconstruction-candidate -t "$node_tag" "$scratch/node-context" >/dev/null
+node_base_manifest=''
+if [[ "${SHIRONE_OCI_BASE_CONTEXT:-}" == yes ]]; then
+  # A docker-container builder cannot resolve a tag from the host image store.
+  # Export the actual tested base to OCI, validate it, and load the same bytes
+  # into Docker only for the version/trust-store checks below.
+  docker buildx build --platform linux/amd64 --provenance=false --network=none \
+    -f deploy/ci/Dockerfile.node-reconstruction-candidate -t "$node_tag" \
+    --output "type=oci,dest=$output/node-base.oci.tar" "$scratch/node-context" >/dev/null
+  python3 deploy/ci/verify-oci-archive-candidate.py "$output/node-base.oci.tar" > "$output/node-base.identity.json"
+  node_base_manifest=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["manifest_digest"])' "$output/node-base.identity.json")
+  docker load --input "$output/node-base.oci.tar" >/dev/null
+else
+  docker build --network=none --pull=false -f deploy/ci/Dockerfile.node-reconstruction-candidate -t "$node_tag" "$scratch/node-context" >/dev/null
+fi
 
 echo 'SHIRONE_STAGE=pg_base_build' >&2
 container=$(docker create "$pg_parent")
@@ -71,7 +84,13 @@ COPY ca-files.tar apply-ca-overlay.sh /tmp/
 RUN sh /tmp/apply-ca-overlay.sh
 USER 26
 EOF
-docker build --network=none --pull=false -t "$pg_tag" "$scratch/pg-context" >/dev/null
+if [[ "${SHIRONE_OCI_BASE_CONTEXT:-}" == yes ]]; then
+  # The container driver otherwise leaves the result only in its own cache;
+  # the following runtime checks and integration tests use the Docker store.
+  docker buildx build --network=none --pull=false --load -t "$pg_tag" "$scratch/pg-context" >/dev/null
+else
+  docker build --network=none --pull=false -t "$pg_tag" "$scratch/pg-context" >/dev/null
+fi
 
 echo 'SHIRONE_STAGE=base_checks' >&2
 [[ "$(docker run --rm --network none --entrypoint node "$node_tag" --version)" == v22.23.4 ]]
@@ -84,11 +103,17 @@ pg_roots=$(docker run --rm --network none --entrypoint python3 "$pg_tag" -c 'imp
 [[ "$pg_roots" == '7f8254cff41f9dbe6c289c5664e233de811c8cb4cf21674fd078cf8d4d1a8fdd 148' ]]
 node_id=$(docker image inspect --format '{{.Id}}' "$node_tag")
 pg_id=$(docker image inspect --format '{{.Id}}' "$pg_tag")
-python3 - "$output/bases.json" "$commit" "$node_id" "$pg_id" "$node_tag" "$pg_tag" <<'PY'
+if [[ "${SHIRONE_OCI_BASE_CONTEXT:-}" == yes ]]; then
+  node_config=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["config_digest"])' "$output/node-base.identity.json")
+  [[ "$node_id" == "$node_config" || "$node_id" == "$node_base_manifest" ]] || {
+    echo 'Loaded Node base differs from verified OCI identity' >&2; exit 1;
+  }
+fi
+python3 - "$output/bases.json" "$commit" "$node_id" "$pg_id" "$node_tag" "$pg_tag" "$node_base_manifest" <<'PY'
 import json,sys
 with open(sys.argv[1], 'x') as f:
     json.dump({'source_commit':sys.argv[2], 'node_image_id':sys.argv[3], 'postgres_image_id':sys.argv[4],
-               'node_local_tag':sys.argv[5], 'postgres_local_tag':sys.argv[6],
+               'node_local_tag':sys.argv[5], 'postgres_local_tag':sys.argv[6], 'node_base_manifest':sys.argv[7],
                'release_approved':False}, f, sort_keys=True)
 PY
 printf '%s\n' 'Reconstructed isolated test bases; full equivalence and release authorization remain unverified.'

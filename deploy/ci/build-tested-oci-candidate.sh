@@ -41,6 +41,18 @@ cleanup() {
   done
 }
 trap cleanup EXIT
+build_node_args=(--build-arg "NODE_IMAGE=$NODE_IMAGE")
+if [[ -n "${NODE_BASE_OCI_ARCHIVE:-}" ]]; then
+  # Validate every descriptor and diff_id before extracting the layout. The
+  # verifier allows only regular OCI members, with no links or unsafe paths.
+  python3 deploy/ci/verify-oci-archive-candidate.py "$NODE_BASE_OCI_ARCHIVE" > "$output/node-base.identity.json"
+  node_manifest=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["manifest_digest"])' "$output/node-base.identity.json")
+  [[ "$node_manifest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+  mkdir -m 700 "$output/node-base-layout"
+  tar -xf "$NODE_BASE_OCI_ARCHIVE" -C "$output/node-base-layout"
+  build_node_args=(--build-arg NODE_IMAGE=shironebase \
+    --build-context "shironebase=oci-layout://$output/node-base-layout@$node_manifest")
+fi
 for component in cms ssr reconciler; do
   echo "SHIRONE_STAGE=oci_$component" >&2
   case "$component" in
@@ -50,7 +62,7 @@ for component in cms ssr reconciler; do
   esac
   archive="$output/$component.oci.tar"
   docker buildx build --platform linux/amd64 --provenance=false \
-    --build-arg "NODE_IMAGE=$NODE_IMAGE" --file "$dockerfile" \
+    "${build_node_args[@]}" --file "$dockerfile" \
     --tag "$tag-$component" --output "type=oci,dest=$archive" "$context"
   python3 deploy/ci/verify-oci-archive-candidate.py "$archive" > "$output/$component.identity.json"
   digests[$component]=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["archive_digest"])' "$output/$component.identity.json")

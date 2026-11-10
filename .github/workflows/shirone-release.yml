@@ -20,6 +20,7 @@ jobs:
       metadata_digest: ${{ steps.build.outputs.metadata_digest }}
     env:
       SHIRONE_CI_DISPOSABLE: 'yes'
+      SHIRONE_OCI_BASE_CONTEXT: 'yes'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

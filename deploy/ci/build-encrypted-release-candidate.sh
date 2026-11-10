@@ -37,6 +37,7 @@ echo 'SHIRONE_STAGE=meili_pull' >&2
 docker pull --platform linux/amd64 "$meili" >/dev/null
 echo 'SHIRONE_STAGE=source_tests' >&2
 SHIRONE_CI_DISPOSABLE=yes NODE_IMAGE="$node_tag" POSTGRES_TEST_IMAGE="$pg_tag" MEILI_TEST_IMAGE="$meili" \
+  NODE_BASE_OCI_ARCHIVE="${SHIRONE_OCI_BASE_CONTEXT:+$scratch/bases/node-base.oci.tar}" \
   bash deploy/ci/build-tested-oci-candidate.sh "$commit" "$scratch/images" >&2
 [[ "$(docker image inspect --format '{{.Id}}' "$node_tag")" == "$node_id" && "$(docker image inspect --format '{{.Id}}' "$pg_tag")" == "$pg_id" ]]
 fingerprint=$(python3 -c 'import hashlib,sys;print("sha256:"+hashlib.sha256(sys.argv[1].encode("ascii")).hexdigest())' "$recipient")
