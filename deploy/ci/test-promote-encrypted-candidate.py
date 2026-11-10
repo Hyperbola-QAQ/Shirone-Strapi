@@ -148,6 +148,25 @@ class RealGitChain(unittest.TestCase):
         f.git('push', '-q', '--force', 'origin', 'main')
         with self.assertRaises(ValueError): p.validate_chain('cms', f.source, f.deployment, self.digests)
 
+    def test_multidocument_service_is_preserved_and_tampering_rejected(self):
+        f = self.fixture
+        service = '\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: shirone-cms-service\n'
+        f.git('reset', '--hard', '-q', f.source)
+        f.path.write_text(f.path.read_text() + service)
+        f.git('add', str(f.path))
+        f.git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'add service')
+        f.source = f.git('rev-parse', 'HEAD').strip()
+        original = f.path.read_text()
+        f.path.write_text(original.replace('sha256:' + 'a' * 64, self.digests['cms']))
+        f.commit_deployment()
+        f.git('push', '-q', '--force', 'origin', 'main')
+        p.validate_chain('cms', f.source, f.deployment, self.digests)
+        f.git('reset', '--hard', '-q', f.source)
+        f.path.write_text(original.replace('sha256:' + 'a' * 64, self.digests['cms']).replace('name: shirone-cms-service', 'name: altered-service'))
+        f.commit_deployment()
+        f.git('push', '-q', '--force', 'origin', 'main')
+        with self.assertRaises(ValueError): p.validate_chain('cms', f.source, f.deployment, self.digests)
+
     def test_sequential_changes_require_correct_final_component(self):
         f = self.fixture
         f.ssr.write_text(f.ssr.read_text().replace('sha256:' + 'a' * 64, self.digests['ssr']))

@@ -68,9 +68,11 @@ def validate_chain(component, source, deployment, digests):
         seen.add(item)
         before = list(policy.yaml.load_all(run('git', 'show', f'{previous}:{path}'), Loader=policy.UniqueLoader))
         after = list(policy.yaml.load_all(run('git', 'show', f'{commit}:{path}'), Loader=policy.UniqueLoader))
-        require(len(before) == len(after) == 1, 'exactly one manifest required')
+        require(len(before) == len(after) and len(before) > 0, 'manifest document count changed')
         desired = copy.deepcopy(before)
-        doc = desired[0]
+        deployments = [doc for doc in desired if isinstance(doc, dict) and doc.get('kind') == 'Deployment']
+        require(len(deployments) == 1, 'exactly one Deployment required')
+        doc = deployments[0]
         require(doc.get('kind') == 'Deployment' and doc.get('metadata', {}).get('name') == f'shirone-{item}',
                 'unexpected deployment')
         containers = doc['spec']['template']['spec']['containers']
