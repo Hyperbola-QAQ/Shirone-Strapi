@@ -91,5 +91,11 @@ Because inventory credentials were exposed during a prior audit, **do not run
 source preparation or connect to imini using them until the user has rotated
 and securely reconfigured them**. The identity generator makes a new age key
 and deploy key under a private directory; it does not authorize either key,
-configure Actions credentials, or enable the service. Both scripts have only
-offline synthetic tests; no identities or target files have been created.
+configure Actions credentials, or enable the service. Neither script has been
+run on imini; no identities or target files have been created there.
+
+On 2026-11-12 the identity generator was also exercised locally with a
+SHA-256-verified age 1.3.2 binary and `ssh-keygen`: fresh synthetic keys passed
+age encryption/decryption, SSH public/private matching, private file mode and
+existing-identity refusal. The temporary keys and task directory were removed.
+This did not provision, authorize or test any identity on imini.
