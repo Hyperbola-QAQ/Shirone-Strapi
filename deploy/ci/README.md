@@ -21,6 +21,16 @@ This validates the guarded Kubernetes image update and reversal, not the full
 automatic controller, real GitHub artifact transfer, database compatibility,
 application recovery, or a production rollback. Production was not changed.
 
+A further controller-transaction exercise on 2026-11-11 used actual local Git
+commits and a temporary bare remote, disposable Kubernetes Deployments and
+the same managed Ansible playbooks with only their namespace changed. After
+the real SSR update, the test simulated a lost response; the controller
+restored SSR and CMS in reverse order and verified the original Deployment
+UIDs, images and Git remote state. The namespace was confirmed deleted. The
+exercise simulated admission, artifact download, cryptographic verification,
+registry copying and the public search probe; it was not a full real-provider
+end-to-end test, database migration test or production rollback.
+
 The inactive `hosted-encrypted-release-candidate.yml` proposes adding a
 `main` push trigger to the proven manual release jobs. A push that changes
 only `deploy/k8s/**` is ignored, so the manifest commits used by the guarded
@@ -56,21 +66,21 @@ installed controller. It holds that lock through admission, preview, ordered
 CMS/SSR promotion and verification; writes durable intent receipts before
 side effects; and requests guarded restoration and verification after an
 exception. A process interruption keeps its reservation and requires live
-state reconciliation rather than an automatic retry. Its adapter is only a
-test double today: actual Git compare-and-swap, signed artifact download,
-Ansible deployment, schema compatibility and restoration require further
+state reconciliation rather than an automatic retry. Its adapter connects
+actual Git compare-and-swap, signed artifact handling and Ansible deployment;
+schema compatibility and the full combined production path require further
 validation. `automatic-release-adapter.py` connects the existing signed
 promotion and guarded Ansible rollback entrypoints to this core, with an
 owner-only previous-release record bound to live images and UIDs. A CMS or
 dependency difference stops before deployment. Its tests exercise real Git
 commits and a simulated cluster, including an apply whose response is lost;
-they do not prove actual registry, Ansible, database, publication or search
-recovery. The current preview validates the signed encrypted envelope and OCI
-archives and runs both reviewed Ansible playbooks in server-admission preview;
-this path has only been tested with mocked external commands. The files are
-downloaded by exact run and attempt name and checked against the artifact ID,
-but the new downloader has only simulated tests and previously observed large
-downloads from `gh` may still fail. No target-node pull preflight is performed.
+they do not prove production database, publication or search recovery. The
+current preview validates the signed encrypted envelope and OCI archives and
+runs both reviewed Ansible playbooks in server-admission preview. A separate
+real hosted run verified the bounded downloader against its exact artifact ID,
+both attestations, age decryption and all OCI archives; the verified temporary
+artifact was removed. These pieces have not yet been exercised together by the
+production controller. No target-node pull preflight is performed by it.
 Successful releases atomically update the protected previous
 release record; interruption still requires reconciliation. Do not schedule or
 treat this as production automation.
@@ -80,7 +90,8 @@ isolated controller checkout: it requires clean, exact local and remote main,
 changes one expected image, checks the committed bytes, and pushes with an exact
 parent lease. A conflict or ambiguous network failure requires reconciliation.
 Its isolated real-Git tests cover stale main, concurrent rewind, unexpected
-manifest changes and commit hooks. It is not yet connected to deployment.
+manifest changes and commit hooks. The inactive adapter connects it to the
+guarded deployment and restoration path.
 
 Except for the installed workflow described above, files in this directory
 are not active GitHub Actions workflows. The legacy
