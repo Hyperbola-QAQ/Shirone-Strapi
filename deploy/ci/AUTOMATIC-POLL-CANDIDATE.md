@@ -8,6 +8,9 @@ are loaded from the new checkout rather than a mixture of revisions. It selects
 only successful `main` runs for the exact current commit. An exclusive poll lock,
 durable hold marker, and the controller's source/run reservations prevent blind
 retries after an uncertain interruption. The operator must reconcile a hold.
+The specific bounded download-failure path is eligible for two later polls only
+when no transaction reservation or receipt exists and the checkout is unchanged;
+on the third failure the hold remains. Any ambiguous failure remains held.
 
 The CLI requires `--isolated-test-only`. This candidate is **not ready for
 unattended production use**: a complete controller run and recovery on imini,
@@ -30,7 +33,24 @@ three changes in check mode and made no writes. A direct invocation from the
 Ansible source directory attempted to load unrelated Vault variables; the
 checks used the byte-identical repository copy and a single-host inventory.
 
+The optional `SHIRONE_CONTROLLER_LOCAL=1` mode avoids imini SSH to itself: it
+requires the imini hostname, `hyperbola` account and reviewed management address,
+then uses the existing local kubeconfig and Ansible local connection. Default
+remote operation keeps strict SSH host-key checking. A disposable copy on imini
+successfully read the live CMS deployment UID through local kubectl; no write
+was attempted.
+
+On 2026-11-11 temporary user-owned extraction of signed Debian packages from
+the configured Tsinghua mirror ran Ansible Core 2.19.11 and a read-only local
+kubectl command, and separately ran skopeo 1.18.0. A pinned GitHub CLI 2.102.1
+archive passed its official SHA-256, ran, and exposed the required attestation
+flag. The matching pinned Arch mirror package returned 404, so that test used
+the official GitHub release. All extracted files were removed. These tests are
+not a durable installation or a full attestation/registry/deployment test.
+
 `python3 deploy/ci/test-automatic-release-poll.py` verifies filtering, holds,
-replay refusal, dirty checkout refusal and a real local Git fast-forward. These
-tests mock GitHub and the controller; they do not prove unattended deployment,
-credential isolation, target-host configuration, or production recovery.
+bounded download failure retries, replay refusal, dirty checkout refusal and a
+real local Git fast-forward. The controller and adapter tests exercise explicit
+local-target host/address checks. Tests mock GitHub and production changes;
+they do not prove unattended deployment, credential isolation, target-host
+configuration, or production recovery.

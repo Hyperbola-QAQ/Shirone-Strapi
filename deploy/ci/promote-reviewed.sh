@@ -7,6 +7,20 @@ if [[ "$#" -lt 5 || "$#" -gt 6 ]]; then
   exit 2
 fi
 component=$1 expected_commit=$2 deployment_uid=$3 previous_image=$4 target_image=$5 mode=${6:-preview}
+local_connection=()
+case "${SHIRONE_CONTROLLER_LOCAL:-0}" in
+  0) ;;
+  1)
+    python3 - <<'PY'
+import json, os, pwd, socket, subprocess
+assert socket.gethostname() == 'hyqaq-imini' and pwd.getpwuid(os.geteuid()).pw_name == 'hyperbola'
+interfaces = json.loads(subprocess.check_output(['/usr/bin/ip', '-j', 'address', 'show']))
+assert any(addr.get('local') == '192.168.86.11' for iface in interfaces for addr in iface.get('addr_info', []))
+PY
+    local_connection=(-c local)
+    ;;
+  *) echo 'invalid local controller mode' >&2; exit 2 ;;
+esac
 [[ "$component" == cms || "$component" == ssr ]] || { echo 'invalid component' >&2; exit 2; }
 [[ "$mode" == preview || "$mode" == --apply ]] || { echo 'invalid mode' >&2; exit 2; }
 [[ "$expected_commit" =~ ^[0-9a-f]{40}$ && "$deployment_uid" =~ ^[0-9a-f-]{36}$ ]] || { echo 'invalid commit or UID' >&2; exit 2; }
@@ -46,7 +60,7 @@ scratch=$(mktemp -d /tmp/shirone-promote.XXXXXX)
 trap 'if [[ -f "$scratch/playbook.yml" ]]; then rm "$scratch/playbook.yml"; fi; rmdir "$scratch"' EXIT
 cp "$playbook" "$scratch/playbook.yml"
 cmp -s "$playbook" "$scratch/playbook.yml" || { echo 'playbook copy differs' >&2; exit 1; }
-args=(-i "$control_ip," -u hyperbola "$scratch/playbook.yml" -e '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}' -e "shirone_preview_hosts=$control_ip" -e "shirone_${component}_uid=$deployment_uid" -e "shirone_previous_image=$previous_image")
+args=(-i "$control_ip," -u hyperbola "${local_connection[@]}" "$scratch/playbook.yml" -e '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}' -e "shirone_preview_hosts=$control_ip" -e "shirone_${component}_uid=$deployment_uid" -e "shirone_previous_image=$previous_image")
 if [[ "$mode" == --apply ]]; then args+=(-e "shirone_apply_${component}_image=true"); fi
 export SHIRONE_WORKSPACE="$repo_root"
 cd "$scratch"
@@ -54,7 +68,7 @@ listed_hosts=$(ansible "$control_ip" -i "$control_ip," -u hyperbola --list-hosts
 [[ "$listed_hosts" == $'  hosts (1):\n    '"$control_ip" ]] || { echo 'reviewed control-plane host not selected' >&2; exit 1; }
 ansible-playbook "${args[@]}"
 if [[ "$mode" == --apply ]]; then
-  ansible "$control_ip" -i "$control_ip," -u hyperbola -e '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}' -m command -a "kubectl --kubeconfig=/home/hyperbola/.kube/config -n mizuki rollout status deployment/shirone-${component} --timeout=180s"
+  ansible "$control_ip" -i "$control_ip," -u hyperbola "${local_connection[@]}" -e '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}' -m command -a "kubectl --kubeconfig=/home/hyperbola/.kube/config -n mizuki rollout status deployment/shirone-${component} --timeout=180s"
   curl --fail --silent --show-error --max-time 20 --output /dev/null https://hyperbola.cc/
   curl --fail --silent --show-error --max-time 20 --output /dev/null https://strapi.hyperbola.cc/admin
   printf '%s\n' 'Rollout and public health checks passed; verify publication/search and recorded digest.'

@@ -27,6 +27,10 @@ transaction = load('automatic-release-transaction')
 adapter_module = load('automatic-release-adapter')
 
 
+class DownloadUnavailable(RuntimeError):
+    """Download failed before any release transaction was started."""
+
+
 def run(run_id, checkout, state, key, recipient, previous_record):
     if type(run_id) is not int or run_id < 1:
         raise ValueError('invalid run ID')
@@ -49,7 +53,12 @@ def run(run_id, checkout, state, key, recipient, previous_record):
     # GitHub CLI downloads by unique run/name. The gate verifies that exact ID
     # belongs to this run and attempt before accepting the file attestations.
     with tempfile.TemporaryDirectory(prefix='shirone-controller-download-', dir=state) as scratch:
-        artifact = download.download(run_id, attempt, scratch, artifact_id)
+        try:
+            artifact = download.download(run_id, attempt, scratch, artifact_id)
+        except RuntimeError:
+            # This exception is raised only by the downloader's bounded failure
+            # path, before constructing an adapter or beginning a transaction.
+            raise DownloadUnavailable('release download unavailable') from None
         policy = {'source': source, 'signer': source, 'workflow_id': workflow_id}
         adapter = adapter_module.Adapter(checkout, policy, artifact_id, artifact / 'metadata.json',
                                          artifact / 'release.age', key, recipient, previous_record)

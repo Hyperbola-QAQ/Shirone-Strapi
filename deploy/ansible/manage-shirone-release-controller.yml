@@ -80,6 +80,7 @@
           Environment=HOME={{ shirone_controller_home }}
           Environment=GH_CONFIG_DIR={{ shirone_controller_state }}/gh
           Environment=SHIRONE_WORKSPACE={{ shirone_controller_checkout }}
+          Environment=SHIRONE_CONTROLLER_LOCAL=1
           Environment="GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"
           ExecStart=/usr/bin/python3 {{ shirone_controller_checkout }}/deploy/ci/automatic-release-poll.py --isolated-test-only --checkout {{ shirone_controller_checkout }} --state {{ shirone_controller_state }} --key {{ shirone_controller_state }}/identity.agekey --recipient-file {{ shirone_controller_checkout }}/deploy/ci/release-recipient.txt --previous-record {{ shirone_controller_state }}/previous.json
           TimeoutStartSec=45min

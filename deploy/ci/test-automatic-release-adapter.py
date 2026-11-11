@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +19,30 @@ def load(name):
 mod = load('automatic-release-adapter')
 tx = load('automatic-release-transaction')
 fixture = load('test-provenance-candidate')
+
+
+class LocalTargetTests(unittest.TestCase):
+    def test_local_target_requires_reviewed_host_user_and_address(self):
+        addresses = '[{"addr_info":[{"local":"192.168.86.11"}]}]'
+        with patch.dict(mod.os.environ, {'SHIRONE_CONTROLLER_LOCAL': '1'}), \
+             patch.object(mod.socket, 'gethostname', return_value='hyqaq-imini'), \
+             patch.object(mod.pwd, 'getpwuid', return_value=SimpleNamespace(pw_name='hyperbola')), \
+             patch.object(mod, 'command', return_value=addresses):
+            self.assertTrue(mod.local_target())
+        with patch.dict(mod.os.environ, {'SHIRONE_CONTROLLER_LOCAL': '1'}), \
+             patch.object(mod.socket, 'gethostname', return_value='unexpected'):
+            with self.assertRaises(ValueError): mod.local_target()
+        with patch.dict(mod.os.environ, {'SHIRONE_CONTROLLER_LOCAL': '1'}), \
+             patch.object(mod.socket, 'gethostname', return_value='hyqaq-imini'), \
+             patch.object(mod.pwd, 'getpwuid', return_value=SimpleNamespace(pw_name='hyperbola')), \
+             patch.object(mod, 'command', return_value='[]'):
+            with self.assertRaises(ValueError): mod.local_target()
+
+    def test_kubectl_local_mode_never_uses_ssh(self):
+        with patch.object(mod, 'local_target', return_value=True), \
+             patch.object(mod, 'command', return_value='ok') as call:
+            self.assertEqual(mod.kubectl('get', 'deployments'), 'ok')
+            self.assertEqual(call.call_args.args[0], 'kubectl')
 
 
 class RealGitAdapterTests(unittest.TestCase):

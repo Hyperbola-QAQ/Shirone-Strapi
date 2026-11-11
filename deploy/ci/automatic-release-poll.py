@@ -39,6 +39,43 @@ def eligible_run(response, head):
     return max((x['id'] for x in runs), default=None)
 
 
+def clear_hold(state):
+    (state / 'poll-hold').unlink()
+    directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def retry_download_if_safe(checkout, state, head, run_id):
+    """Allow at most two later polls after a known pre-transaction failure."""
+    if (os.path.lexists(state / f'run-{run_id}.json') or
+            os.path.lexists(state / f'source-{head}.json') or
+            any(state.glob(f'run-{run_id}-*.json')) or
+            git(checkout, 'status', '--porcelain', '--untracked-files=all') or
+            git(checkout, 'rev-parse', 'HEAD') != head):
+        return
+    for attempt in range(1, 4):
+        try:
+            fd = os.open(state / f'download-failure-{head}-{attempt}',
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, 'w') as file:
+            file.write(f'{run_id}\n')
+            file.flush()
+            os.fsync(file.fileno())
+        directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        if attempt < 3:
+            clear_hold(state)
+        return
+
+
 def poll(checkout, state, key, recipient_file, previous_record):
     checkout, state = Path(checkout), Path(state)
     info = state.lstat()
@@ -94,13 +131,12 @@ def poll(checkout, state, key, recipient_file, previous_record):
             os.close(directory)
         # The marker deliberately survives every failure or interruption. The
         # controller reserves the source before promotion and never retries it.
-        controller.run(run_id, checkout, state, key, recipient, previous_record)
-        (state / 'poll-hold').unlink()
-        directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            controller.run(run_id, checkout, state, key, recipient, previous_record)
+        except controller.DownloadUnavailable:
+            retry_download_if_safe(checkout, state, head, run_id)
+            raise
+        clear_hold(state)
         return 'completed'
     finally:
         os.close(fd)

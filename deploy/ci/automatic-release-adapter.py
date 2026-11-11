@@ -9,7 +9,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import pwd
 import re
+import socket
 import stat
 import subprocess
 import tempfile
@@ -35,6 +37,29 @@ def command(*args, cwd=None, env=None):
     return subprocess.run(args, cwd=cwd, env=env, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout
 
 
+def local_target():
+    mode = os.environ.get('SHIRONE_CONTROLLER_LOCAL', '0')
+    if mode not in ('0', '1'):
+        raise ValueError('invalid local controller mode')
+    if mode == '0':
+        return False
+    if socket.gethostname() != 'hyqaq-imini' or pwd.getpwuid(os.geteuid()).pw_name != 'hyperbola':
+        raise ValueError('local controller is not on the reviewed host')
+    addresses = json.loads(command('/usr/bin/ip', '-j', 'address', 'show'))
+    if not any(item.get('local') == '192.168.86.11' for interface in addresses
+               for item in interface.get('addr_info', [])):
+        raise ValueError('reviewed management address missing')
+    return True
+
+
+def kubectl(*args):
+    target = ('kubectl', '--kubeconfig=/home/hyperbola/.kube/config', '-n', 'mizuki', *args)
+    if local_target():
+        return command(*target)
+    return command('ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+                   'hyperbola@192.168.86.11', *target)
+
+
 class Adapter:
     def __init__(self, checkout, policy, artifact_id, metadata_path, ciphertext_path, key, recipient, previous_record):
         self.checkout = Path(checkout).resolve()
@@ -54,9 +79,7 @@ class Adapter:
         return gitops.git(self.checkout, *args)
 
     def _live(self, component):
-        raw = command('ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
-                      'hyperbola@192.168.86.11', 'kubectl', '--kubeconfig=/home/hyperbola/.kube/config',
-                      '-n', 'mizuki', 'get', 'deployment', f'shirone-{component}', '-o', 'json')
+        raw = kubectl('get', 'deployment', f'shirone-{component}', '-o', 'json')
         deployment = json.loads(raw)
         containers = deployment['spec']['template']['spec']['containers']
         if len(containers) != 1 or containers[0]['name'] != component:
@@ -176,7 +199,8 @@ class Adapter:
                                    ANSIBLE_HOST_KEY_CHECKING='True', ANSIBLE_BECOME='false', SHIRONE_WORKSPACE=str(scratch))
                 for name in ('ANSIBLE_SSH_ARGS', 'ANSIBLE_SSH_COMMON_ARGS', 'ANSIBLE_SSH_EXTRA_ARGS', 'ANSIBLE_SSH_EXECUTABLE'):
                     environment.pop(name, None)
-                command('ansible-playbook', '-i', '192.168.86.11,', '-u', 'hyperbola', str(isolated_playbook),
+                connection = ('-c', 'local') if local_target() else ()
+                command('ansible-playbook', '-i', '192.168.86.11,', '-u', 'hyperbola', *connection, str(isolated_playbook),
                         '-e', '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}',
                         '-e', 'shirone_preview_hosts=192.168.86.11',
                         '-e', f"shirone_{component}_uid={snapshot['components'][component]['uid']}",
@@ -203,9 +227,7 @@ class Adapter:
             os.chdir(original)
 
     def verify(self, component, admission, snapshot):
-        command('ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
-                'hyperbola@192.168.86.11', 'kubectl', '--kubeconfig=/home/hyperbola/.kube/config',
-                '-n', 'mizuki', 'rollout', 'status', f'deployment/shirone-{component}', '--timeout=180s')
+        kubectl('rollout', 'status', f'deployment/shirone-{component}', '--timeout=180s')
         expected = f"192.168.86.100:30500/shirone/{component}@{admission['manifests'][component]}"
         current = self._live(component)
         if current != {'uid': snapshot['components'][component]['uid'], 'image': expected}:
@@ -402,9 +424,7 @@ class Adapter:
                 self._git('status', '--porcelain', '--untracked-files=all')):
             raise ValueError('restored Git state is not current and clean')
         for component in ('cms', 'ssr'):
-            command('ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
-                    'hyperbola@192.168.86.11', 'kubectl', '--kubeconfig=/home/hyperbola/.kube/config',
-                    '-n', 'mizuki', 'rollout', 'status', f'deployment/shirone-{component}', '--timeout=180s')
+            kubectl('rollout', 'status', f'deployment/shirone-{component}', '--timeout=180s')
             if self._live(component) != snapshot['components'][component]:
                 raise ValueError('restored deployment differs')
             manifest = (self.checkout / 'deploy/k8s' / f'{component}.yaml').read_text()

@@ -56,6 +56,26 @@ class PollTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'reconciliation'): self.invoke()
             run.assert_called_once()
 
+    def test_download_failure_allows_two_bounded_retries_before_hold(self):
+        with patch.object(poll, 'git', side_effect=self.git), \
+             patch.object(poll.controller.gate, 'gh', return_value=self.response()), \
+             patch.object(poll.controller, 'run', side_effect=poll.controller.DownloadUnavailable('offline')) as run:
+            for attempt in range(1, 4):
+                with self.assertRaises(poll.controller.DownloadUnavailable): self.invoke()
+                self.assertEqual((self.state / 'poll-hold').exists(), attempt == 3)
+            with self.assertRaisesRegex(ValueError, 'reconciliation'): self.invoke()
+            self.assertEqual(run.call_count, 3)
+
+    def test_download_error_does_not_clear_hold_if_transaction_reserved(self):
+        def reserved(*args):
+            (self.state / f'source-{HEAD}.json').write_text('{}')
+            raise poll.controller.DownloadUnavailable('offline')
+        with patch.object(poll, 'git', side_effect=self.git), \
+             patch.object(poll.controller.gate, 'gh', return_value=self.response()), \
+             patch.object(poll.controller, 'run', side_effect=reserved):
+            with self.assertRaises(poll.controller.DownloadUnavailable): self.invoke()
+            self.assertTrue((self.state / 'poll-hold').exists())
+
     def test_different_source_or_ineligible_event_does_not_run(self):
         for change in ({'head_sha': 'b' * 40}, {'event': 'pull_request'}, {'conclusion': 'failure'}):
             response = self.response()

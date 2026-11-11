@@ -43,6 +43,19 @@ class ControllerTests(unittest.TestCase):
             controller.run(7, '/repo', '/state', '/key', 'recipient', '/record')
         retrieve.assert_not_called()
 
+    def test_download_failure_is_reported_before_transaction(self):
+        source = 'a' * 40
+        info = {'id': 7, 'head_sha': source, 'workflow_id': 3, 'run_attempt': 1,
+                'head_branch': 'main', 'status': 'completed', 'conclusion': 'success', 'event': 'push'}
+        artifacts = {'total_count': 1, 'artifacts': [{'name': 'shirone-encrypted-release-7-1', 'id': 9, 'expired': False}]}
+        with tempfile.TemporaryDirectory() as state, \
+             patch.object(controller.gate, 'gh', side_effect=[info, artifacts]), \
+             patch.object(controller.download, 'download', side_effect=RuntimeError('offline')), \
+             patch.object(controller.transaction, 'execute') as execute:
+            with self.assertRaises(controller.DownloadUnavailable):
+                controller.run(7, '/repo', state, '/key', 'recipient', '/record')
+            execute.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
