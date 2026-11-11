@@ -5,7 +5,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+import urllib.error
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('poll', Path(__file__).with_name('automatic-release-poll.py'))
 poll = importlib.util.module_from_spec(spec)
@@ -74,6 +76,34 @@ class PollTests(unittest.TestCase):
              patch.object(poll.controller.gate, 'gh', return_value=self.response()), \
              patch.object(poll.controller, 'run', side_effect=reserved):
             with self.assertRaises(poll.controller.DownloadUnavailable): self.invoke()
+            self.assertTrue((self.state / 'poll-hold').exists())
+
+    def test_real_downloader_network_failure_is_bounded_before_transaction(self):
+        run = {'id': 42, 'head_sha': HEAD, 'workflow_id': 3, 'run_attempt': 1,
+               'head_branch': 'main', 'status': 'completed', 'conclusion': 'success', 'event': 'push'}
+        artifact = {'id': 9, 'name': 'shirone-encrypted-release-42-1', 'expired': False,
+                    'size_in_bytes': 8, 'workflow_run': {'id': 42}}
+        listing = {'total_count': 1, 'artifacts': [artifact]}
+        def gh(endpoint):
+            if endpoint.endswith('/runs/42/artifacts?per_page=100'): return listing
+            if endpoint.endswith('/runs/42'): return run
+            return self.response()
+        opener = SimpleNamespace(open=Mock(side_effect=urllib.error.URLError('offline')))
+        with patch.object(poll, 'git', side_effect=self.git), \
+             patch.object(poll.controller.gate, 'gh', side_effect=gh), \
+             patch.object(poll.controller.download, 'artifact_info', return_value=artifact), \
+             patch.object(poll.controller.download, 'artifact_location', return_value='https://example.invalid/file'), \
+             patch.object(poll.controller.download.urllib.request, 'build_opener', return_value=opener), \
+             patch.object(poll.controller.download.time, 'sleep'):
+            for attempt in range(1, 4):
+                with self.assertRaises(poll.controller.DownloadUnavailable): self.invoke()
+                self.assertEqual((self.state / 'poll-hold').exists(), attempt == 3)
+
+    def test_unclassified_error_keeps_hold(self):
+        with patch.object(poll, 'git', side_effect=self.git), \
+             patch.object(poll.controller.gate, 'gh', return_value=self.response()), \
+             patch.object(poll.controller, 'run', side_effect=ValueError('invalid artifact')):
+            with self.assertRaises(ValueError): self.invoke()
             self.assertTrue((self.state / 'poll-hold').exists())
 
     def test_different_source_or_ineligible_event_does_not_run(self):

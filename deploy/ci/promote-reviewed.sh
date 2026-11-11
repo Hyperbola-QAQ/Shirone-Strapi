@@ -13,9 +13,11 @@ case "${SHIRONE_CONTROLLER_LOCAL:-0}" in
   1)
     python3 - <<'PY'
 import json, os, pwd, socket, subprocess
-assert socket.gethostname() == 'hyqaq-imini' and pwd.getpwuid(os.geteuid()).pw_name == 'hyperbola'
+if socket.gethostname() != 'hyqaq-imini' or pwd.getpwuid(os.geteuid()).pw_name != 'hyperbola':
+    raise SystemExit('local controller is not on the reviewed host')
 interfaces = json.loads(subprocess.check_output(['/usr/bin/ip', '-j', 'address', 'show']))
-assert any(addr.get('local') == '192.168.86.11' for iface in interfaces for addr in iface.get('addr_info', []))
+if not any(addr.get('local') == '192.168.86.11' for iface in interfaces for addr in iface.get('addr_info', [])):
+    raise SystemExit('reviewed management address missing')
 PY
     local_connection=(-c local)
     ;;
@@ -55,7 +57,7 @@ playbook="$ops/update_shirone_${component}_image.yml"
 cmp -s "$playbook" "$repo_root/deploy/ansible/update-${component}-image.yml" || { echo 'Ansible source differs from reviewed copy' >&2; exit 1; }
 export ANSIBLE_CONFIG="$ops/ansible.cfg" ANSIBLE_HOST_KEY_CHECKING=True ANSIBLE_BECOME=false
 unset ANSIBLE_SSH_ARGS ANSIBLE_SSH_COMMON_ARGS ANSIBLE_SSH_EXTRA_ARGS ANSIBLE_SSH_EXECUTABLE
-control_ip=$(ansible-inventory -i "$ops/inventory/hosts.yml" --host hyqaq-imini | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ansible_host")=="192.168.86.11" and d.get("ansible_user")=="hyperbola"; print(d["ansible_host"])')
+control_ip=$(ansible-inventory -i "$ops/inventory/hosts.yml" --host hyqaq-imini | python3 -c 'import json,sys; d=json.load(sys.stdin); (d.get("ansible_host")=="192.168.86.11" and d.get("ansible_user")=="hyperbola") or sys.exit("unexpected inventory identity"); print(d["ansible_host"])')
 scratch=$(mktemp -d /tmp/shirone-promote.XXXXXX)
 trap 'if [[ -f "$scratch/playbook.yml" ]]; then rm "$scratch/playbook.yml"; fi; rmdir "$scratch"' EXIT
 cp "$playbook" "$scratch/playbook.yml"

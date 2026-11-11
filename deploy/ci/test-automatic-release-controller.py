@@ -50,7 +50,7 @@ class ControllerTests(unittest.TestCase):
         artifacts = {'total_count': 1, 'artifacts': [{'name': 'shirone-encrypted-release-7-1', 'id': 9, 'expired': False}]}
         with tempfile.TemporaryDirectory() as state, \
              patch.object(controller.gate, 'gh', side_effect=[info, artifacts]), \
-             patch.object(controller.download, 'download', side_effect=RuntimeError('offline')), \
+             patch.object(controller.download, 'download', side_effect=controller.download.TransportUnavailable('offline')), \
              patch.object(controller.transaction, 'execute') as execute:
             with self.assertRaises(controller.DownloadUnavailable):
                 controller.run(7, '/repo', state, '/key', 'recipient', '/record')

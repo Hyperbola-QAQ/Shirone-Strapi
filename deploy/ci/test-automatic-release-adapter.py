@@ -2,8 +2,11 @@
 """Real isolated Git transaction with simulated registry, Ansible and cluster."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
+import socket
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -22,6 +25,15 @@ fixture = load('test-provenance-candidate')
 
 
 class LocalTargetTests(unittest.TestCase):
+    def test_optimized_python_still_rejects_wrong_local_host(self):
+        if socket.gethostname() == 'hyqaq-imini':
+            self.skipTest('negative test requires a non-target host')
+        env = dict(os.environ, SHIRONE_CONTROLLER_LOCAL='1', PYTHONOPTIMIZE='1')
+        result = subprocess.run(['bash', str(HERE / 'promote-reviewed.sh'), 'cms', 'a', 'b', 'c', 'd'],
+                                env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('local controller is not on the reviewed host', result.stderr)
+
     def test_local_target_requires_reviewed_host_user_and_address(self):
         addresses = '[{"addr_info":[{"local":"192.168.86.11"}]}]'
         with patch.dict(mod.os.environ, {'SHIRONE_CONTROLLER_LOCAL': '1'}), \

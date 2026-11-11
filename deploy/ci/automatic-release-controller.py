@@ -55,9 +55,10 @@ def run(run_id, checkout, state, key, recipient, previous_record):
     with tempfile.TemporaryDirectory(prefix='shirone-controller-download-', dir=state) as scratch:
         try:
             artifact = download.download(run_id, attempt, scratch, artifact_id)
-        except RuntimeError:
-            # This exception is raised only by the downloader's bounded failure
-            # path, before constructing an adapter or beginning a transaction.
+        except download.TransportUnavailable:
+            # Only classified transient transport failures are retryable; a
+            # mismatched artifact, authentication failure or integrity error
+            # remains held for explicit reconciliation.
             raise DownloadUnavailable('release download unavailable') from None
         policy = {'source': source, 'signer': source, 'workflow_id': workflow_id}
         adapter = adapter_module.Adapter(checkout, policy, artifact_id, artifact / 'metadata.json',

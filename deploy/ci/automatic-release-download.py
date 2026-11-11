@@ -24,9 +24,16 @@ CHUNK = 16 * 1024 * 1024
 WORKERS = 6
 
 
+class TransportUnavailable(RuntimeError):
+    """A classified temporary network failure before any transaction."""
+
+
 def artifact_info(artifact_id):
-    result = subprocess.run(['gh', 'api', f'repos/{REPO}/actions/artifacts/{artifact_id}'],
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, timeout=60)
+    try:
+        result = subprocess.run(['gh', 'api', f'repos/{REPO}/actions/artifacts/{artifact_id}'],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        raise TransportUnavailable('artifact metadata timed out') from None
     return json.loads(result.stdout)
 
 
@@ -54,9 +61,13 @@ def artifact_location(artifact_id):
         with opener.open(request, timeout=30):
             raise ValueError('unexpected artifact response')
     except urllib.error.HTTPError as error:
+        if error.code in (408, 429) or 500 <= error.code <= 599:
+            raise TransportUnavailable('artifact location temporarily unavailable') from None
         if error.code != 302:
             raise ValueError('artifact location request failed') from None
         location = error.headers.get('Location', '')
+    except (urllib.error.URLError, TimeoutError, ConnectionError):
+        raise TransportUnavailable('artifact location temporarily unavailable') from None
     parsed = urllib.parse.urlsplit(location)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError('invalid artifact location')
@@ -84,12 +95,18 @@ def fetch_range(url, start, end, total, path, retries=3):
                     if response.read(1):
                         raise ValueError('artifact range contains extra bytes')
             return
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            if path.exists():
+                path.unlink()
+            if isinstance(error, urllib.error.HTTPError) and error.code not in (408, 429) and not 500 <= error.code <= 599:
+                raise ValueError('artifact range request rejected') from None
+            if attempt + 1 == retries:
+                raise TransportUnavailable('artifact range temporarily unavailable') from None
+            time.sleep(2 * (attempt + 1))
         except Exception:
             if path.exists():
                 path.unlink()
-            if attempt + 1 == retries:
-                raise ValueError('artifact range download failed') from None
-            time.sleep(2 * (attempt + 1))
+            raise
 
 
 def unpack(archive, destination):
