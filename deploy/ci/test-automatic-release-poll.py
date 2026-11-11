@@ -119,6 +119,34 @@ class PollTests(unittest.TestCase):
                 with self.assertRaises(poll.controller.gate.ApiUnavailable): self.invoke()
                 self.assertEqual((self.state / 'poll-hold').exists(), attempt == 3)
 
+    def test_actual_adapter_admission_api_failure_uses_same_bounded_retry(self):
+        run = {'id': 42, 'head_sha': HEAD, 'workflow_id': 3, 'run_attempt': 1,
+               'head_branch': 'main', 'status': 'completed', 'conclusion': 'success', 'event': 'push'}
+        artifact = {'id': 9, 'name': 'shirone-encrypted-release-42-1', 'expired': False}
+        def gh(endpoint):
+            if endpoint.endswith('/runs/42/artifacts?per_page=100'):
+                return {'total_count': 1, 'artifacts': [artifact]}
+            if endpoint.endswith('/runs/42'): return run
+            return self.response()
+        def fake_download(run_id, attempt, parent, artifact_id):
+            directory = Path(parent) / 'artifact'
+            directory.mkdir()
+            (directory / 'metadata.json').write_text('{}')
+            (directory / 'release.age').write_bytes(b'ciphertext')
+            return directory
+        def adapter_git(repo, *args):
+            return HEAD if args[0] == 'rev-parse' else ''
+        failure = subprocess.CompletedProcess(['gh'], 1, b'HTTP/2.0 503 Unavailable\r\n\r\n', b'')
+        adapter = poll.controller.adapter_module
+        with patch.object(poll, 'git', side_effect=self.git), \
+             patch.object(poll.controller.gate, 'gh', side_effect=gh), \
+             patch.object(poll.controller.download, 'download', side_effect=fake_download), \
+             patch.object(adapter.gitops, 'git', side_effect=adapter_git), \
+             patch.object(adapter.gate.api.subprocess, 'run', return_value=failure):
+            for attempt in range(1, 4):
+                with self.assertRaises(poll.controller.gate.ApiUnavailable): self.invoke()
+                self.assertEqual((self.state / 'poll-hold').exists(), attempt == 3)
+
     def test_real_downloader_early_eof_is_bounded_before_transaction(self):
         run = {'id': 42, 'head_sha': HEAD, 'workflow_id': 3, 'run_attempt': 1,
                'head_branch': 'main', 'status': 'completed', 'conclusion': 'success', 'event': 'push'}

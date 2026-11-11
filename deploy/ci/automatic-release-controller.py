@@ -63,7 +63,13 @@ def run(run_id, checkout, state, key, recipient, previous_record):
         policy = {'source': source, 'signer': source, 'workflow_id': workflow_id}
         adapter = adapter_module.Adapter(checkout, policy, artifact_id, artifact / 'metadata.json',
                                          artifact / 'release.age', key, recipient, previous_record)
-        transaction.execute(adapter, state, run_id, source)
+        try:
+            transaction.execute(adapter, state, run_id, source)
+        except adapter_module.gate.ApiUnavailable:
+            # The adapter imports its own isolated copy of the gate. Translate
+            # its transient exception to the controller's gate type; poll still
+            # checks that no transaction was reserved before retrying.
+            raise gate.ApiUnavailable('release admission API unavailable') from None
 
 
 def main():
