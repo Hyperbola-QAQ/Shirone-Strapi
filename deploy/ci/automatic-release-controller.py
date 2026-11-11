@@ -49,7 +49,7 @@ def run(run_id, checkout, state, key, recipient, previous_record):
     # GitHub CLI downloads by unique run/name. The gate verifies that exact ID
     # belongs to this run and attempt before accepting the file attestations.
     with tempfile.TemporaryDirectory(prefix='shirone-controller-download-', dir=state) as scratch:
-        artifact = download.download(run_id, attempt, scratch)
+        artifact = download.download(run_id, attempt, scratch, artifact_id)
         policy = {'source': source, 'signer': source, 'workflow_id': workflow_id}
         adapter = adapter_module.Adapter(checkout, policy, artifact_id, artifact / 'metadata.json',
                                          artifact / 'release.age', key, recipient, previous_record)

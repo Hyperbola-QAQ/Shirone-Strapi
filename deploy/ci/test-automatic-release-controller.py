@@ -23,8 +23,8 @@ class ControllerTests(unittest.TestCase):
                 'head_branch': 'main', 'status': 'completed', 'conclusion': 'success', 'event': 'push'}
         artifacts = {'total_count': 1, 'artifacts': [{'name': 'shirone-encrypted-release-7-2', 'id': 9, 'expired': False}]}
         adapter = fixture.Adapter()
-        def fake_download(run, attempt, parent):
-            self.assertEqual((run, attempt), (7, 2))
+        def fake_download(run, attempt, parent, artifact_id):
+            self.assertEqual((run, attempt, artifact_id), (7, 2, 9))
             path = Path(parent) / 'artifact'; path.mkdir()
             return path
         with tempfile.TemporaryDirectory() as state, \
