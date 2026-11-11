@@ -8,6 +8,7 @@
     shirone_controller_prepare_tools: false
     shirone_controller_prepare_source: false
     shirone_controller_prepare_identity: false
+    shirone_controller_prepare_checkout: false
     shirone_controller_enable: false
     shirone_controller_confirm: ''
     shirone_controller_home: /home/hyperbola
@@ -16,21 +17,27 @@
     shirone_controller_units_path: /home/hyperbola/.config/systemd/user
     shirone_controller_share: /home/hyperbola/.local/share/shirone-release
     shirone_controller_ops: /home/hyperbola/Work/ansible-debian-k8s
+    shirone_controller_expected_commit: ''
+    shirone_controller_author_name: ''
+    shirone_controller_author_email: ''
   tasks:
     - name: Keep this unvalidated candidate disabled
       ansible.builtin.assert:
         that:
           - not (shirone_controller_enable | bool)
           - not (shirone_controller_install | bool) or shirone_controller_confirm == 'stage-inactive-shirone-controller'
-          - not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool)) or shirone_controller_confirm == 'prepare-shirone-runtime'
-          - not (shirone_controller_install | bool) or not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool))
+          - not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool) or (shirone_controller_prepare_checkout | bool)) or shirone_controller_confirm == 'prepare-shirone-runtime'
+          - not (shirone_controller_install | bool) or not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool) or (shirone_controller_prepare_checkout | bool))
           - shirone_controller_home == '/home/hyperbola'
           - shirone_controller_state == '/home/hyperbola/.local/state/shirone-release'
           - shirone_controller_checkout == '/home/hyperbola/.local/share/shirone-release/repo'
           - shirone_controller_units_path == '/home/hyperbola/.config/systemd/user'
           - shirone_controller_share == '/home/hyperbola/.local/share/shirone-release'
           - shirone_controller_ops == '/home/hyperbola/Work/ansible-debian-k8s'
-          - not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool)) or lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool) or (shirone_controller_prepare_checkout | bool)) or lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - not (shirone_controller_prepare_checkout | bool) or shirone_controller_expected_commit is match('^[0-9a-f]{40}$')
+          - not (shirone_controller_prepare_checkout | bool) or shirone_controller_author_name | length > 0
+          - not (shirone_controller_prepare_checkout | bool) or shirone_controller_author_email | length > 0
         quiet: true
 
     - name: Explain the inactive staging boundary
@@ -58,21 +65,48 @@
       ansible.builtin.stat:
         path: "{{ shirone_controller_share }}"
       register: shirone_controller_share_stat
-      when: shirone_controller_prepare_tools | bool
+      when: (shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_checkout | bool)
 
     - name: Refuse an unsafe existing release tools parent
       ansible.builtin.assert:
         that:
           - not shirone_controller_share_stat.stat.exists or (shirone_controller_share_stat.stat.isdir and not shirone_controller_share_stat.stat.islnk and shirone_controller_share_stat.stat.pw_name == 'hyperbola' and shirone_controller_share_stat.stat.mode == '0700')
         quiet: true
-      when: shirone_controller_prepare_tools | bool
+      when: (shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_checkout | bool)
 
     - name: Create the release tools parent when absent
       ansible.builtin.file:
         path: "{{ shirone_controller_share }}"
         state: directory
         mode: '0700'
-      when: (shirone_controller_prepare_tools | bool) and not shirone_controller_share_stat.stat.exists
+      when: ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_checkout | bool)) and not shirone_controller_share_stat.stat.exists
+
+    - name: Inspect the dedicated checkout and its bootstrap script
+      ansible.builtin.stat:
+        path: "{{ shirone_controller_share }}/{{ item }}"
+      loop: [repo, bootstrap-controller-checkout.py]
+      register: shirone_controller_checkout_targets
+      when: shirone_controller_prepare_checkout | bool
+
+    - name: Refuse to overwrite an existing checkout or bootstrap script
+      ansible.builtin.assert:
+        that:
+          - shirone_controller_checkout_targets.results | selectattr('stat.exists') | list | length == 0
+        quiet: true
+      when: shirone_controller_prepare_checkout | bool
+
+    - name: Stage the reviewed checkout bootstrap
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/ci/bootstrap-controller-checkout.py"
+        dest: "{{ shirone_controller_share }}/bootstrap-controller-checkout.py"
+        mode: '0700'
+      when: shirone_controller_prepare_checkout | bool
+
+    - name: Create the dedicated checkout from reviewed public main
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, "{{ shirone_controller_share }}/bootstrap-controller-checkout.py", --prepare, --destination, "{{ shirone_controller_checkout }}", --expected, "{{ shirone_controller_expected_commit }}", --author-name, "{{ shirone_controller_author_name }}", --author-email, "{{ shirone_controller_author_email }}"]
+      no_log: true
+      when: (shirone_controller_prepare_checkout | bool) and not ansible_check_mode
 
     - name: Inspect the target tool directory and installer
       ansible.builtin.stat:

@@ -83,7 +83,15 @@ so the same-version official archive was used. This did not validate a private
 registry pull or a complete installation on imini.
 
 The Ansible candidate has separate explicit preparation switches for tools,
-minimal source and a **fresh** target-side identity. The source preparation
+minimal source, a dedicated checkout and a **fresh** target-side identity.
+`bootstrap-controller-checkout.py` creates the checkout in a new private
+directory via anonymous public HTTPS, requires an independently reviewed exact
+main SHA, disables inherited Git configuration and hooks, requires an explicit
+commit author, and configures only the repository SSH origin. It does not push,
+install credentials or start a service; real Git tests use a temporary local
+bare repository. This bootstrap has not been run on imini.
+
+The source preparation
 checks the authoritative inventory locally under `no_log`, verifies the two
 reviewed image playbooks, and writes a sanitized target inventory with only the
 required host address and user. It never copies Vault files or credentials.
