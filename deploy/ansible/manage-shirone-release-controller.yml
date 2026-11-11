@@ -1,0 +1,106 @@
+---
+- name: Stage an inactive Shirone release controller
+  hosts: "{{ shirone_controller_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  become: false
+  vars:
+    shirone_controller_install: false
+    shirone_controller_enable: false
+    shirone_controller_confirm: ''
+    shirone_controller_home: /home/hyperbola
+    shirone_controller_state: /home/hyperbola/.local/state/shirone-release
+    shirone_controller_checkout: /home/hyperbola/.local/share/shirone-release/repo
+    shirone_controller_units_path: /home/hyperbola/.config/systemd/user
+  tasks:
+    - name: Keep this unvalidated candidate disabled
+      ansible.builtin.assert:
+        that:
+          - not (shirone_controller_enable | bool)
+          - not (shirone_controller_install | bool) or shirone_controller_confirm == 'stage-inactive-shirone-controller'
+          - shirone_controller_home == '/home/hyperbola'
+          - shirone_controller_state == '/home/hyperbola/.local/state/shirone-release'
+          - shirone_controller_checkout == '/home/hyperbola/.local/share/shirone-release/repo'
+          - shirone_controller_units_path == '/home/hyperbola/.config/systemd/user'
+        quiet: true
+
+    - name: Explain the inactive staging boundary
+      ansible.builtin.debug:
+        msg: >-
+          No controller is installed by default. This candidate must not be
+          enabled until its dedicated credentials, dependencies, source checkout,
+          target-host paths, end-to-end deployment and recovery are verified.
+
+    - name: Inspect any existing controller units
+      ansible.builtin.stat:
+        path: "{{ shirone_controller_units_path }}/shirone-release-controller.{{ item }}"
+      loop: [service, timer]
+      register: shirone_controller_units
+      when: shirone_controller_install | bool
+
+    - name: Refuse to replace existing units
+      ansible.builtin.assert:
+        that:
+          - shirone_controller_units.results | selectattr('stat.exists') | list | length == 0
+        quiet: true
+      when: shirone_controller_install | bool
+
+    - name: Create a private controller state directory
+      ansible.builtin.file:
+        path: "{{ shirone_controller_state }}"
+        state: directory
+        mode: '0700'
+      when: shirone_controller_install | bool
+
+    - name: Inspect the user service directory
+      ansible.builtin.stat:
+        path: "{{ shirone_controller_units_path }}"
+      register: shirone_controller_units_dir
+      when: shirone_controller_install | bool
+
+    - name: Create the user service directory only when absent
+      ansible.builtin.file:
+        path: "{{ shirone_controller_units_path }}"
+        state: directory
+        mode: '0700'
+      when: shirone_controller_install | bool and not shirone_controller_units_dir.stat.exists
+
+    - name: Stage an inactive controller service
+      ansible.builtin.copy:
+        dest: "{{ shirone_controller_units_path }}/shirone-release-controller.service"
+        mode: '0600'
+        content: |
+          [Unit]
+          Description=Shirone release controller candidate
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          WorkingDirectory={{ shirone_controller_checkout }}
+          Environment=HOME={{ shirone_controller_home }}
+          Environment=GH_CONFIG_DIR={{ shirone_controller_state }}/gh
+          Environment=SHIRONE_WORKSPACE={{ shirone_controller_checkout }}
+          Environment="GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          ExecStart=/usr/bin/python3 {{ shirone_controller_checkout }}/deploy/ci/automatic-release-poll.py --isolated-test-only --checkout {{ shirone_controller_checkout }} --state {{ shirone_controller_state }} --key {{ shirone_controller_state }}/identity.agekey --recipient-file {{ shirone_controller_checkout }}/deploy/ci/release-recipient.txt --previous-record {{ shirone_controller_state }}/previous.json
+          TimeoutStartSec=45min
+          NoNewPrivileges=true
+          PrivateTmp=true
+          UMask=0077
+      when: shirone_controller_install | bool
+
+    - name: Stage an inactive controller timer
+      ansible.builtin.copy:
+        dest: "{{ shirone_controller_units_path }}/shirone-release-controller.timer"
+        mode: '0600'
+        content: |
+          [Unit]
+          Description=Check for an eligible Shirone release
+
+          [Timer]
+          OnBootSec=5min
+          OnUnitInactiveSec=5min
+          Unit=shirone-release-controller.service
+
+          [Install]
+          WantedBy=timers.target
+      when: shirone_controller_install | bool
