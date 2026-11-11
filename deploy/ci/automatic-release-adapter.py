@@ -232,7 +232,7 @@ class Adapter:
             return
         component, previous, old, target = self.pending_commit
         if self._git('status', '--porcelain', '--untracked-files=all'):
-            self._recover_dirty_pending(component, previous, old, target)
+            self._recover_preserved_checkout(component, previous, old)
             return
         if self._git('symbolic-ref', '--quiet', '--short', 'HEAD') != 'main':
             raise ValueError('pending commit checkout is not main')
@@ -247,8 +247,13 @@ class Adapter:
         parents = self._git('rev-list', '--parents', '-n', '1', current).split()
         relative = f'deploy/k8s/{component}.yaml'
         changed = self._git('diff-tree', '--no-commit-id', '--name-only', '-r', previous, current).splitlines()
-        if parents != [current, previous] or changed != [relative]:
+        if parents != [current, previous]:
             raise ValueError('pending commit is not the expected direct child')
+        if changed != [relative]:
+            if remote == previous:
+                self._recover_preserved_checkout(component, previous, old)
+                return
+            raise ValueError('pending commit changes unexpected files')
         def blob(revision):
             return subprocess.run(['git', '-C', str(self.checkout), 'show', f'{revision}:{relative}'],
                                   check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
@@ -260,6 +265,9 @@ class Adapter:
         found = matches[0]
         expected = before[:found.start(2)] + target.encode() + before[found.end(2):]
         if after != expected or (self.checkout / relative).read_bytes() != expected:
+            if remote == previous:
+                self._recover_preserved_checkout(component, previous, old)
+                return
             raise ValueError('pending commit includes unexpected changes')
         if remote == previous:
             # Whichever of the delayed push and this fence first updates the
@@ -294,11 +302,13 @@ class Adapter:
         self.head = current
         self.pending_commit = None
 
-    def _recover_dirty_pending(self, component, previous, old, target):
-        """Fence and recover from an isolated clone without touching dirty files."""
+    def _recover_preserved_checkout(self, component, previous, old):
+        """Fence and recover from a clone, leaving all local work untouched."""
+        current = self._git('rev-parse', 'HEAD')
         if (self._git('symbolic-ref', '--quiet', '--short', 'HEAD') != 'main' or
-                self._git('rev-parse', 'HEAD') != previous or gitops.remote_head(self.checkout) != previous):
-            raise ValueError('dirty pending checkout or remote changed')
+                gitops.remote_head(self.checkout) != previous or
+                (current != previous and self._git('rev-list', '--parents', '-n', '1', current).split() != [current, previous])):
+            raise ValueError('pending checkout or remote changed')
         relative = f'deploy/k8s/{component}.yaml'
         before = subprocess.run(['git', '-C', str(self.checkout), 'show', f'{previous}:{relative}'],
                                 check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout

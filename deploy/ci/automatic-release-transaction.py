@@ -73,5 +73,5 @@ def execute(adapter, directory, run_id, source):
             except Exception as restore_error:
                 raise RuntimeError('Release failed; restoration is unverified and requires reconciliation') from restore_error
             if preserved:
-                raise RuntimeError('Release failed; previous state restored and verified; original dirty checkout preserved for review')
+                raise RuntimeError('Release failed; previous state restored and verified; original checkout preserved for review')
             raise RuntimeError('Release failed; previous state was restored and verified')

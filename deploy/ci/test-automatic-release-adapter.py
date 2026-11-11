@@ -133,6 +133,19 @@ class RealGitAdapterTests(unittest.TestCase):
         self.assertIn('deploy/k8s/ssr.yaml', self.f.git('status', '--porcelain'))
         self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
 
+    def test_unexpected_hook_commit_is_preserved_while_live_is_restored(self):
+        hook = self.f.repo / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nif git diff --cached --name-only | grep -qx deploy/k8s/ssr.yaml; then\n'
+                        '  printf "\\n# preserve hook change\\n" >> deploy/k8s/ssr.yaml\n'
+                        '  git add deploy/k8s/ssr.yaml\nfi\nexit 0\n')
+        hook.chmod(0o755)
+        with self.assertRaisesRegex(RuntimeError, 'original checkout preserved for review'):
+            self.run_transaction()
+        self.assertEqual(self.live, self.original)
+        self.assertIn('# preserve hook change', self.f.ssr.read_text())
+        self.assertNotEqual(self.f.git('rev-parse', 'HEAD'), mod.gitops.remote_head(self.f.repo))
+        self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
+
     def test_unpushed_pending_commit_is_fenced_without_publishing_it(self):
         real_commit = mod.gitops.commit_manifest
         def lose_push(repo, component, expected, old, new):
