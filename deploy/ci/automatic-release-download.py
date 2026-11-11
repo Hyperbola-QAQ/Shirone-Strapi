@@ -5,7 +5,8 @@ Transport only: the caller must verify both attestations and OCI content.
 No credentials, signed URLs or command error bodies are printed.
 """
 from concurrent.futures import ThreadPoolExecutor
-import json
+import http.client
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -28,13 +29,16 @@ class TransportUnavailable(RuntimeError):
     """A classified temporary network failure before any transaction."""
 
 
+API_SPEC = importlib.util.spec_from_file_location('download_github_api', Path(__file__).with_name('github-api-safe.py'))
+api = importlib.util.module_from_spec(API_SPEC)
+API_SPEC.loader.exec_module(api)
+
+
 def artifact_info(artifact_id):
     try:
-        result = subprocess.run(['gh', 'api', f'repos/{REPO}/actions/artifacts/{artifact_id}'],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, timeout=60)
-    except subprocess.TimeoutExpired:
-        raise TransportUnavailable('artifact metadata timed out') from None
-    return json.loads(result.stdout)
+        return api.call(f'repos/{REPO}/actions/artifacts/{artifact_id}')
+    except api.ApiUnavailable:
+        raise TransportUnavailable('artifact metadata unavailable') from None
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -89,13 +93,13 @@ def fetch_range(url, start, end, total, path, retries=3):
                     while remaining:
                         block = response.read(min(1024 * 1024, remaining))
                         if not block:
-                            raise ValueError('truncated artifact range')
+                            raise TransportUnavailable('artifact range ended early')
                         output.write(block)
                         remaining -= len(block)
                     if response.read(1):
                         raise ValueError('artifact range contains extra bytes')
             return
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, TransportUnavailable) as error:
             if path.exists():
                 path.unlink()
             if isinstance(error, urllib.error.HTTPError) and error.code not in (408, 429) and not 500 <= error.code <= 599:

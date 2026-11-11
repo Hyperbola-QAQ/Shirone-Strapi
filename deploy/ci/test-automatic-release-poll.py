@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -105,6 +106,44 @@ class PollTests(unittest.TestCase):
              patch.object(poll.controller, 'run', side_effect=ValueError('invalid artifact')):
             with self.assertRaises(ValueError): self.invoke()
             self.assertTrue((self.state / 'poll-hold').exists())
+
+    def test_real_api_503_is_bounded_before_transaction(self):
+        def response(args, **kwargs):
+            if 'workflows/shirone-release.yml/runs?' in args[-1]:
+                body = json.dumps(self.response()).encode()
+                return subprocess.CompletedProcess(args, 0, b'HTTP/2.0 200 OK\r\nX: y\r\n\r\n' + body, b'')
+            return subprocess.CompletedProcess(args, 1, b'HTTP/2.0 503 Unavailable\r\n\r\n', b'')
+        with patch.object(poll, 'git', side_effect=self.git), \
+             patch.object(poll.controller.gate.api.subprocess, 'run', side_effect=response):
+            for attempt in range(1, 4):
+                with self.assertRaises(poll.controller.gate.ApiUnavailable): self.invoke()
+                self.assertEqual((self.state / 'poll-hold').exists(), attempt == 3)
+
+    def test_real_downloader_early_eof_is_bounded_before_transaction(self):
+        run = {'id': 42, 'head_sha': HEAD, 'workflow_id': 3, 'run_attempt': 1,
+               'head_branch': 'main', 'status': 'completed', 'conclusion': 'success', 'event': 'push'}
+        artifact = {'id': 9, 'name': 'shirone-encrypted-release-42-1', 'expired': False,
+                    'size_in_bytes': 8, 'workflow_run': {'id': 42}}
+        def gh(endpoint):
+            if endpoint.endswith('/runs/42/artifacts?per_page=100'):
+                return {'total_count': 1, 'artifacts': [artifact]}
+            if endpoint.endswith('/runs/42'): return run
+            return self.response()
+        class Response:
+            status = 206
+            headers = {'Content-Range': 'bytes 0-7/8'}
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, amount): return b''
+        opener = SimpleNamespace(open=Mock(return_value=Response()))
+        with patch.object(poll, 'git', side_effect=self.git), \
+             patch.object(poll.controller.gate, 'gh', side_effect=gh), \
+             patch.object(poll.controller.download, 'artifact_info', return_value=artifact), \
+             patch.object(poll.controller.download, 'artifact_location', return_value='https://example.invalid/file'), \
+             patch.object(poll.controller.download.urllib.request, 'build_opener', return_value=opener), \
+             patch.object(poll.controller.download.time, 'sleep'):
+            with self.assertRaises(poll.controller.DownloadUnavailable): self.invoke()
+            self.assertFalse((self.state / 'poll-hold').exists())
 
     def test_different_source_or_ineligible_event_does_not_run(self):
         for change in ({'head_sha': 'b' * 40}, {'event': 'pull_request'}, {'conclusion': 'failure'}):

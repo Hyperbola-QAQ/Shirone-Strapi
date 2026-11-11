@@ -81,7 +81,7 @@ class DownloadTests(unittest.TestCase):
                 download.fetch_range('https://example.invalid', 0, 2, 3, path)
             self.assertFalse(path.exists())
             Response.headers['Content-Range'] = 'bytes 0-2/3'
-            with self.assertRaises(ValueError):
+            with self.assertRaises(download.TransportUnavailable):
                 download.fetch_range('https://example.invalid', 0, 2, 3, path)
             self.assertFalse(path.exists())
 

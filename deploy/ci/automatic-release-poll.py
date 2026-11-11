@@ -133,7 +133,7 @@ def poll(checkout, state, key, recipient_file, previous_record):
         # controller reserves the source before promotion and never retries it.
         try:
             controller.run(run_id, checkout, state, key, recipient, previous_record)
-        except controller.DownloadUnavailable:
+        except (controller.DownloadUnavailable, controller.gate.ApiUnavailable):
             retry_download_if_safe(checkout, state, head, run_id)
             raise
         clear_hold(state)

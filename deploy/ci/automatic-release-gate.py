@@ -20,14 +20,19 @@ HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location('release_metadata', HERE / 'verify-release-metadata-candidate.py')
 metadata = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(metadata)
+API_SPEC = importlib.util.spec_from_file_location('safe_github_api', HERE / 'github-api-safe.py')
+api = importlib.util.module_from_spec(API_SPEC)
+API_SPEC.loader.exec_module(api)
+ApiUnavailable = api.ApiUnavailable
 REPO = 'Hyperbola-QAQ/Shirone-Strapi'
 SHA = re.compile(r'^[0-9a-f]{40}$')
 DIGEST = re.compile(r'^sha256:[0-9a-f]{64}$')
 
 
 def gh(*args):
-    result = subprocess.run(['gh', 'api', *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return json.loads(result.stdout)
+    if len(args) != 1:
+        raise ValueError('expected one API endpoint')
+    return api.call(args[0])
 
 
 def admit(policy, run_id, artifact_id, signed_metadata, ciphertext_digest, recipient, checkout=None):
