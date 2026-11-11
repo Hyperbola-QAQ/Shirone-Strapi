@@ -14,6 +14,12 @@ spec.loader.exec_module(installer)
 
 
 class InstallerTests(unittest.TestCase):
+    def test_standalone_runtime_includes_pinned_yaml_and_packaging(self):
+        packages = {name: (version, digest) for name, version, digest in installer.PACKAGES}
+        for name, version in (('python3-yaml', '6.0.2-1+b2'), ('python3-packaging', '25.0-1')):
+            self.assertEqual(packages[name][0], version)
+            self.assertRegex(packages[name][1], r'^[0-9a-f]{64}$')
+
     def test_digest_validation_rejects_changed_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'file'

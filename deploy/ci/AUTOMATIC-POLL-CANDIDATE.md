@@ -61,13 +61,19 @@ configuration, or production recovery.
 ## Runtime preparation candidate
 
 `install-controller-tools.py` prepares a new owner-only user directory, using
-nine version-and-SHA256-pinned Debian packages and pinned GitHub CLI/age
+eleven version-and-SHA256-pinned Debian packages and pinned GitHub CLI/age
 archives. Configured APT sources and the domestic mirror are tried first; an
 official same-version source is used only after mirror failure and checksum
 validation. Installation refuses to replace an existing directory, validates
 tool versions and required attestation flags, and does not touch credentials or
-system packages. Its current integration tests use synthetic archives; a real
-complete installation and private registry pull on imini remain unverified.
+system packages. On 2026-11-12 a disposable local Debian 13 container completed
+the installer with real checksum-pinned Debian packages and loaded Ansible
+2.19.11, skopeo 1.18.0, GitHub CLI 2.102.1 and age 1.3.2. The two public CLI
+archives were fetched and checksum-verified on the controller, then injected
+into the container because its direct GitHub connection failed; the installer
+verified their checksums again. The pinned GitHub CLI mirror file was absent,
+so the same-version official archive was used. This did not validate a private
+registry pull or a complete installation on imini.
 
 The Ansible candidate has separate explicit preparation switches for tools,
 minimal source and a **fresh** target-side identity. The source preparation

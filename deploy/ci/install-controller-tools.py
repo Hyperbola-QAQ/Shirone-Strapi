@@ -20,6 +20,8 @@ PACKAGES = (
     ('python3-cryptography', '43.0.0-3+deb13u1', 'edfc3aab6cbc4941aa19798059867696eeae90eb41b6dc2c5197c521da548972'),
     ('python3-jinja2', '3.1.6-1', '3271804134e18dbc8dbd146f58399817789373e86a58be44d10ce159cf8c4600'),
     ('python3-resolvelib', '1.1.0-1', '341185635136e19e642f63e409e910ac1ba706e71a8a3cbffd196d6dab792e03'),
+    ('python3-yaml', '6.0.2-1+b2', '0019c4e7848c83a0d6bcb78cca902b5cdb1714aa6370ba01955b1fed6f667056'),
+    ('python3-packaging', '25.0-1', 'd70c8469f6e9c6105e1ebcd3ebdc963f11dadbeddd89d2d1a2a3cb1c97d2ecbc'),
     ('python3-markupsafe', '2.1.5-1+b3', 'f82dbd759e6b9c111dc764b3ce7744633d0c97948aaa77294984b80e9db44a24'),
     ('python3-cffi-backend', '1.17.1-3', '7cfe53f3eff772127fd22e503876e3dd2b34b4c2a68fe9a524ce214e5bb7927a'),
     ('skopeo', '1.18.0+ds1-1+b5', '7ca44a3f31f3cddca9d9dc858029dd08c30faf6e93456753825509e6a59192e2'),
