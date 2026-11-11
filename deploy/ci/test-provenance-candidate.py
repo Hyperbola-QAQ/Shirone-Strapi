@@ -92,6 +92,25 @@ class CandidateTests(unittest.TestCase):
         self.git('push', '-q', '--force', 'origin', 'main')
         self.assertNotEqual(self.verify().returncode, 0)
 
+    def test_service_document_preserved_and_tampering_rejected(self):
+        service = '\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: shirone-cms-service\n'
+        self.git('reset', '--hard', '-q', self.source)
+        self.path.write_text(self.path.read_text() + service)
+        self.git('add', str(self.path))
+        self.git('commit', '-qm', 'service')
+        self.source = self.git('rev-parse', 'HEAD')
+        original = self.path.read_text()
+        self.path.write_text(original.replace(OLD, NEW))
+        self.commit_deployment()
+        self.git('push', '-q', '--force', 'origin', 'main')
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.git('reset', '--hard', '-q', self.source)
+        self.path.write_text(original.replace(OLD, NEW).replace('shirone-cms-service', 'altered-service'))
+        self.commit_deployment()
+        self.git('push', '-q', '--force', 'origin', 'main')
+        self.assertNotEqual(self.verify().returncode, 0)
+
     def test_extra_file_rejected(self):
         self.git('reset', '--hard', '-q', self.source)
         self.path.write_text(self.manifest(NEW))

@@ -1,10 +1,20 @@
-# Inactive encrypted promotion candidate
+# Encrypted promotion procedure and candidate history
 
-`promote-encrypted-candidate.py` connects the existing candidates for review;
-it is not installed as a workflow and is **not approved for production**. Its
-default invokes only the guarded Ansible admission preview after verification.
-No real GitHub-hosted attestation, internal OCI archive transfer, node pull,
-deployment or rollback has been tested with this wrapper. An isolated real
+> Status, 2026-11-11: real GitHub-hosted run `42823518264` completed, both
+> file attestations were verified, the envelope was decrypted and its OCI
+> contents validated, and the CMS and SSR images were copied to the internal
+> registry, pulled on both schedulable nodes and deployed via guarded Ansible.
+> CMS reached 1/1 and SSR 2/2, with public site and admin health checks
+> passing. Application-level post-deployment checks and a production rollback
+> still need completion. The local multi-document manifest fix used for that
+> deployment is now in the version-controlled wrapper. The earlier statements
+> below describe the initial candidate and isolated rehearsals.
+
+`promote-encrypted-candidate.py` connects the release verification and guarded
+deployment tools. It is invoked by an operator, not installed as a workflow.
+Its default invokes only the guarded Ansible admission preview after verification.
+The real forward deployments above were tested; production rollback remains
+unverified. An isolated real
 `skopeo` 1.24.1 test copied a Buildx OCI archive to a temporary loopback TLS
 registry with certificate verification and retained the exact manifest digest;
 that does not establish that the production registry or wrapper works.

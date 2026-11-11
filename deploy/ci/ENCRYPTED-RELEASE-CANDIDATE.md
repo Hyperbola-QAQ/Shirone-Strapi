@@ -1,10 +1,16 @@
-# Encrypted OCI release artifacts: design only
+# Encrypted OCI release artifacts: design and implementation history
 
-This candidate avoids giving a public repository's Actions access to private
+> Status, 2026-11-11: the manual hosted workflow, protected recipient,
+> encrypted artifact, dual real GitHub attestations, verified OCI transfer and
+> guarded CMS/SSR deployments have been exercised in run `42823518264`.
+> Automated promotion and production rollback remain unverified. The design
+> notes below document earlier assumptions and test gaps; they are not a
+> current inventory of completed work.
+
+This design avoids giving a public repository's Actions access to private
 GHCR base packages and avoids uploading plaintext release images as public
-workflow artifacts. It is not implemented or approved for production. This
-document does not generate keys, enable workflows, access production, or
-retain database or upload content. Existing workflows remain disabled.
+workflow artifacts. The manual workflow implements the design without including
+database or upload content. The legacy Mizuki workflows remain disabled.
 
 The proposal concerns only short-lived transfer of rebuildable OCI release
 artifacts, not scheduled backups of the CMS database, uploaded files or other

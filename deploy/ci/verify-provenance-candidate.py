@@ -78,12 +78,14 @@ def check(component, source, deployment, signer, digest):
         path = changed[0]
         before = list(yaml.load_all(run('git', 'show', f'{parent}:{path}'), Loader=UniqueLoader))
         after = list(yaml.load_all(run('git', 'show', f'{commit}:{path}'), Loader=UniqueLoader))
-        require(len(before) == len(after) == 1, 'one manifest document required')
+        require(len(before) == len(after) and len(before) > 0, 'manifest document count changed')
         candidate = copy.deepcopy(before)
-        doc = candidate[0]
+        indices = [i for i, doc in enumerate(candidate) if isinstance(doc, dict) and doc.get('kind') == 'Deployment']
+        require(len(indices) == 1, 'exactly one Deployment required')
+        doc = candidate[indices[0]]
         require(doc.get('kind') == 'Deployment' and doc.get('metadata', {}).get('name') == f'shirone-{item}', 'unexpected deployment')
         containers = doc['spec']['template']['spec']['containers']
-        updated_containers = after[0]['spec']['template']['spec']['containers']
+        updated_containers = after[indices[0]]['spec']['template']['spec']['containers']
         require(len(containers) == len(updated_containers) == 1 and containers[0]['name'] == item, 'unexpected containers')
         internal = updated_containers[0]['image']
         image_match = re.fullmatch(rf'192\.168\.86\.100:30500/shirone/{item}@(sha256:[0-9a-f]{{64}})', internal)

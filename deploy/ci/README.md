@@ -1,6 +1,16 @@
 # Shirone-Strapi CI/CD candidate
 
-Nothing in this directory is an active GitHub Actions workflow. The legacy
+> Status, 2026-11-11: `.github/workflows/shirone-release.yml` is an active,
+> manual-dispatch-only encrypted release workflow. GitHub-hosted run
+> `42823518264` built and tested the exact images, separately attested the
+> ciphertext and metadata, and the verified CMS and SSR images were deployed
+> through the guarded Ansible path. The deployment process remains manual;
+> automatic delivery and a production rollback are not yet verified. Legacy
+> Mizuki workflows remain disabled. Much of the candidate discussion below
+> records earlier investigations and should be read in that context.
+
+Except for the installed workflow described above, files in this directory
+are not active GitHub Actions workflows. The legacy
 `CI` and `Deploy Mizuki to Kubernetes` workflows remain disabled; do not install
 or enable the candidate until the dedicated runner, image provenance and
 deployment controls below have been provisioned and tested. No article
