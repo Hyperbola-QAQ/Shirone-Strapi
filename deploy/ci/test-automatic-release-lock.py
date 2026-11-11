@@ -2,6 +2,8 @@
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -42,6 +44,19 @@ class LockTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         lock.reserve(run, source)
             self.assertEqual([p.name for p in Path(directory).iterdir()], ['release.lock'])
+
+    def test_killed_controller_releases_lock_but_not_reservation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = ("import importlib.util,os,sys; "
+                      "s=importlib.util.spec_from_file_location('l',sys.argv[1]); "
+                      "m=importlib.util.module_from_spec(s);s.loader.exec_module(m); "
+                      "lock=m.ReleaseLock(sys.argv[2]).__enter__(); "
+                      "lock.reserve(77,'c'*40); os._exit(23)")
+            result = subprocess.run([sys.executable, '-c', script, str(spec.origin), directory], check=False)
+            self.assertEqual(result.returncode, 23)
+            with release_lock.ReleaseLock(directory) as lock:
+                with self.assertRaises(FileExistsError):
+                    lock.reserve(77, 'c' * 40)
 
 
 if __name__ == '__main__':
