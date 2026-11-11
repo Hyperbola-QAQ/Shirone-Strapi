@@ -21,8 +21,11 @@ and independently verified. Never copy the existing controller identity or a
 broad personal access token. CMS or base image changes currently fail the
 controller's rollback-compatibility gate.
 
-`deploy/ansible/manage-shirone-release-controller.yml` is mirrored at
-`/home/hyperbola/Work/ansible-debian-k8s/manage_shirone_release_controller.yml`.
+`deploy/ansible/manage-shirone-release-controller.yml` has a proposed source
+counterpart at `/home/hyperbola/Work/ansible-debian-k8s/manage_shirone_release_controller.yml`.
+The two currently differ: the repository copy adds state-directory safety
+checks. Do not use either for staging until the difference is reviewed and the
+authoritative source is synchronized.
 By default it creates nothing. An explicit staging flag and confirmation can
 place **disabled** user service/timer unit files on imini; enabling is rejected.
 It does not install dependencies, clone the repo, generate or copy credentials,
@@ -54,3 +57,26 @@ real local Git fast-forward. The controller and adapter tests exercise explicit
 local-target host/address checks. Tests mock GitHub and production changes;
 they do not prove unattended deployment, credential isolation, target-host
 configuration, or production recovery.
+
+## Runtime preparation candidate
+
+`install-controller-tools.py` prepares a new owner-only user directory, using
+nine version-and-SHA256-pinned Debian packages and pinned GitHub CLI/age
+archives. Configured APT sources and the domestic mirror are tried first; an
+official same-version source is used only after mirror failure and checksum
+validation. Installation refuses to replace an existing directory, validates
+tool versions and required attestation flags, and does not touch credentials or
+system packages. Its current integration tests use synthetic archives; a real
+complete installation and private registry pull on imini remain unverified.
+
+The Ansible candidate has separate explicit preparation switches for tools,
+minimal source and a **fresh** target-side identity. The source preparation
+checks the authoritative inventory locally under `no_log`, verifies the two
+reviewed image playbooks, and writes a sanitized target inventory with only the
+required host address and user. It never copies Vault files or credentials.
+Because inventory credentials were exposed during a prior audit, **do not run
+source preparation or connect to imini using them until the user has rotated
+and securely reconfigured them**. The identity generator makes a new age key
+and deploy key under a private directory; it does not authorize either key,
+configure Actions credentials, or enable the service. Both scripts have only
+offline synthetic tests; no identities or target files have been created.

@@ -5,22 +5,32 @@
   become: false
   vars:
     shirone_controller_install: false
+    shirone_controller_prepare_tools: false
+    shirone_controller_prepare_source: false
+    shirone_controller_prepare_identity: false
     shirone_controller_enable: false
     shirone_controller_confirm: ''
     shirone_controller_home: /home/hyperbola
     shirone_controller_state: /home/hyperbola/.local/state/shirone-release
     shirone_controller_checkout: /home/hyperbola/.local/share/shirone-release/repo
     shirone_controller_units_path: /home/hyperbola/.config/systemd/user
+    shirone_controller_share: /home/hyperbola/.local/share/shirone-release
+    shirone_controller_ops: /home/hyperbola/Work/ansible-debian-k8s
   tasks:
     - name: Keep this unvalidated candidate disabled
       ansible.builtin.assert:
         that:
           - not (shirone_controller_enable | bool)
           - not (shirone_controller_install | bool) or shirone_controller_confirm == 'stage-inactive-shirone-controller'
+          - not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool)) or shirone_controller_confirm == 'prepare-shirone-runtime'
+          - not (shirone_controller_install | bool) or not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool))
           - shirone_controller_home == '/home/hyperbola'
           - shirone_controller_state == '/home/hyperbola/.local/state/shirone-release'
           - shirone_controller_checkout == '/home/hyperbola/.local/share/shirone-release/repo'
           - shirone_controller_units_path == '/home/hyperbola/.config/systemd/user'
+          - shirone_controller_share == '/home/hyperbola/.local/share/shirone-release'
+          - shirone_controller_ops == '/home/hyperbola/Work/ansible-debian-k8s'
+          - not ((shirone_controller_prepare_tools | bool) or (shirone_controller_prepare_source | bool) or (shirone_controller_prepare_identity | bool)) or lookup('env', 'SHIRONE_WORKSPACE') | length > 0
         quiet: true
 
     - name: Explain the inactive staging boundary
@@ -44,12 +54,191 @@
         quiet: true
       when: shirone_controller_install | bool
 
-    - name: Create a private controller state directory
+    - name: Inspect the private release tools parent
+      ansible.builtin.stat:
+        path: "{{ shirone_controller_share }}"
+      register: shirone_controller_share_stat
+      when: shirone_controller_prepare_tools | bool
+
+    - name: Refuse an unsafe existing release tools parent
+      ansible.builtin.assert:
+        that:
+          - not shirone_controller_share_stat.stat.exists or (shirone_controller_share_stat.stat.isdir and not shirone_controller_share_stat.stat.islnk and shirone_controller_share_stat.stat.pw_name == 'hyperbola' and shirone_controller_share_stat.stat.mode == '0700')
+        quiet: true
+      when: shirone_controller_prepare_tools | bool
+
+    - name: Create the release tools parent when absent
+      ansible.builtin.file:
+        path: "{{ shirone_controller_share }}"
+        state: directory
+        mode: '0700'
+      when: (shirone_controller_prepare_tools | bool) and not shirone_controller_share_stat.stat.exists
+
+    - name: Inspect the target tool directory and installer
+      ansible.builtin.stat:
+        path: "{{ shirone_controller_share }}/{{ item }}"
+      loop: [tools, install-controller-tools.py]
+      register: shirone_controller_tool_targets
+      when: shirone_controller_prepare_tools | bool
+
+    - name: Refuse to overwrite existing tools or installer
+      ansible.builtin.assert:
+        that:
+          - shirone_controller_tool_targets.results | selectattr('stat.exists') | list | length == 0
+        quiet: true
+      when: shirone_controller_prepare_tools | bool
+
+    - name: Stage the reviewed pinned tool installer
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/ci/install-controller-tools.py"
+        dest: "{{ shirone_controller_share }}/install-controller-tools.py"
+        mode: '0700'
+      when: shirone_controller_prepare_tools | bool
+
+    - name: Install pinned user-owned tools without enabling a service
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, "{{ shirone_controller_share }}/install-controller-tools.py", --install, --destination, "{{ shirone_controller_share }}/tools"]
+      when: (shirone_controller_prepare_tools | bool) and not ansible_check_mode
+
+    - name: Validate the authoritative inventory host without logging its values
+      ansible.builtin.command:
+        argv: [ansible-inventory, -i, "{{ shirone_controller_ops }}/inventory/hosts.yml", --host, hyqaq-imini]
+      delegate_to: localhost
+      register: shirone_source_inventory
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: shirone_controller_prepare_source | bool
+
+    - name: Require the expected inventory identity without exposing host variables
+      ansible.builtin.assert:
+        that:
+          - (shirone_source_inventory.stdout | from_json).ansible_host == '192.168.86.11'
+          - (shirone_source_inventory.stdout | from_json).ansible_user == 'hyperbola'
+        quiet: true
+      no_log: true
+      when: shirone_controller_prepare_source | bool
+
+    - name: Require the two source playbooks to match reviewed repository copies
+      ansible.builtin.assert:
+        that:
+          - lookup('file', shirone_controller_ops + '/update_shirone_' + item + '_image.yml') == lookup('file', lookup('env', 'SHIRONE_WORKSPACE') + '/deploy/ansible/update-' + item + '-image.yml')
+        quiet: true
+      loop: [cms, ssr]
+      no_log: true
+      when: shirone_controller_prepare_source | bool
+
+    - name: Inspect the target Ansible source directory
+      ansible.builtin.stat:
+        path: "{{ shirone_controller_ops }}"
+      register: shirone_target_ops
+      when: shirone_controller_prepare_source | bool
+
+    - name: Refuse to overwrite a target Ansible source directory
+      ansible.builtin.assert:
+        that: [not shirone_target_ops.stat.exists]
+        quiet: true
+      when: shirone_controller_prepare_source | bool
+
+    - name: Inspect the target work directory
+      ansible.builtin.stat:
+        path: /home/hyperbola/Work
+      register: shirone_target_work
+      when: shirone_controller_prepare_source | bool
+
+    - name: Refuse an unsafe existing target work directory
+      ansible.builtin.assert:
+        that:
+          - not shirone_target_work.stat.exists or (shirone_target_work.stat.isdir and not shirone_target_work.stat.islnk and shirone_target_work.stat.pw_name == 'hyperbola')
+        quiet: true
+      when: shirone_controller_prepare_source | bool
+
+    - name: Create the target work directory only when absent
+      ansible.builtin.file:
+        path: /home/hyperbola/Work
+        state: directory
+        mode: '0700'
+      when: (shirone_controller_prepare_source | bool) and not shirone_target_work.stat.exists
+
+    - name: Create the minimal target Ansible source directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      loop:
+        - "{{ shirone_controller_ops }}"
+        - "{{ shirone_controller_ops }}/inventory"
+      when: shirone_controller_prepare_source | bool
+
+    - name: Mirror only the reviewed Ansible configuration and image playbooks
+      ansible.builtin.copy:
+        src: "{{ shirone_controller_ops }}/{{ item }}"
+        dest: "{{ shirone_controller_ops }}/{{ item }}"
+        mode: '0600'
+      loop: [ansible.cfg, update_shirone_cms_image.yml, update_shirone_ssr_image.yml]
+      no_log: true
+      when: shirone_controller_prepare_source | bool
+
+    - name: Write only the sanitized target inventory identity
+      ansible.builtin.copy:
+        dest: "{{ shirone_controller_ops }}/inventory/hosts.yml"
+        mode: '0600'
+        content: |
+          all:
+            children:
+              bootstrap_control_plane:
+                hosts:
+                  hyqaq-imini:
+                    ansible_host: 192.168.86.11
+                    ansible_user: hyperbola
+      when: shirone_controller_prepare_source | bool
+
+    - name: Inspect the controller state directory
+      ansible.builtin.stat:
+        path: "{{ shirone_controller_state }}"
+      register: shirone_controller_state_stat
+      when: (shirone_controller_install | bool) or (shirone_controller_prepare_identity | bool)
+
+    - name: Refuse an unsafe existing controller state directory
+      ansible.builtin.assert:
+        that:
+          - not shirone_controller_state_stat.stat.exists or (shirone_controller_state_stat.stat.isdir and not shirone_controller_state_stat.stat.islnk and shirone_controller_state_stat.stat.pw_name == 'hyperbola' and shirone_controller_state_stat.stat.mode == '0700')
+        quiet: true
+      when: (shirone_controller_install | bool) or (shirone_controller_prepare_identity | bool)
+
+    - name: Create a private controller state directory only when absent
       ansible.builtin.file:
         path: "{{ shirone_controller_state }}"
         state: directory
         mode: '0700'
-      when: shirone_controller_install | bool
+      when: ((shirone_controller_install | bool) or (shirone_controller_prepare_identity | bool)) and not shirone_controller_state_stat.stat.exists
+
+    - name: Inspect an existing target identity and generator
+      ansible.builtin.stat:
+        path: "{{ shirone_controller_state }}/{{ item }}"
+      loop: [identity, generate-controller-identity.py]
+      register: shirone_identity_targets
+      when: shirone_controller_prepare_identity | bool
+
+    - name: Refuse to replace an existing identity or generator
+      ansible.builtin.assert:
+        that:
+          - shirone_identity_targets.results | selectattr('stat.exists') | list | length == 0
+        quiet: true
+      when: shirone_controller_prepare_identity | bool
+
+    - name: Stage the reviewed fresh identity generator
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/ci/generate-controller-identity.py"
+        dest: "{{ shirone_controller_state }}/generate-controller-identity.py"
+        mode: '0700'
+      when: shirone_controller_prepare_identity | bool
+
+    - name: Generate new target-only release identities
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, "{{ shirone_controller_state }}/generate-controller-identity.py", --generate, --state, "{{ shirone_controller_state }}", --age-keygen, "{{ shirone_controller_share }}/tools/bin/age-keygen"]
+      no_log: true
+      when: (shirone_controller_prepare_identity | bool) and not ansible_check_mode
 
     - name: Inspect the user service directory
       ansible.builtin.stat:
@@ -81,8 +270,9 @@
           Environment=GH_CONFIG_DIR={{ shirone_controller_state }}/gh
           Environment=SHIRONE_WORKSPACE={{ shirone_controller_checkout }}
           Environment=SHIRONE_CONTROLLER_LOCAL=1
-          Environment="GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"
-          ExecStart=/usr/bin/python3 {{ shirone_controller_checkout }}/deploy/ci/automatic-release-poll.py --isolated-test-only --checkout {{ shirone_controller_checkout }} --state {{ shirone_controller_state }} --key {{ shirone_controller_state }}/identity.agekey --recipient-file {{ shirone_controller_checkout }}/deploy/ci/release-recipient.txt --previous-record {{ shirone_controller_state }}/previous.json
+          Environment="GIT_SSH_COMMAND=ssh -i {{ shirone_controller_state }}/identity/deploy-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          Environment=PATH=/home/hyperbola/.local/share/shirone-release/tools/bin:/usr/local/bin:/usr/bin:/bin
+          ExecStart=/usr/bin/python3 {{ shirone_controller_checkout }}/deploy/ci/automatic-release-poll.py --isolated-test-only --checkout {{ shirone_controller_checkout }} --state {{ shirone_controller_state }} --key {{ shirone_controller_state }}/identity/identity.agekey --recipient-file {{ shirone_controller_checkout }}/deploy/ci/release-recipient.txt --previous-record {{ shirone_controller_state }}/previous.json
           TimeoutStartSec=45min
           NoNewPrivileges=true
           PrivateTmp=true
