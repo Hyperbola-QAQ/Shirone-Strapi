@@ -19,6 +19,17 @@ promotion is not included; the trusted operator must verify both attestations
 and explicitly run the guarded Ansible deployment. This candidate is not
 installed and does not enable the old workflows.
 
+`automatic-release-gate.py` is an isolated admission building block, not a
+deployment service. It requires a locally trusted, owner-only policy containing
+an independently approved source SHA, signer SHA and workflow ID; checks the
+GitHub run and workflow identity and exact current remote main; and verifies the
+signed metadata against that policy. It does not download artifacts, verify the
+ciphertext file, lock against concurrent runs, record replay state, change Git,
+deploy, or roll back. Those must be implemented and validated by a controller
+before unattended use. The controller's host and policy parent directories must
+be protected; `main` currently has no GitHub branch protection, so selecting a
+source SHA from GitHub alone is not independent approval.
+
 Except for the installed workflow described above, files in this directory
 are not active GitHub Actions workflows. The legacy
 `CI` and `Deploy Mizuki to Kubernetes` workflows remain disabled; do not install
