@@ -221,7 +221,7 @@ class Adapter:
                 isinstance(hit, dict) and hit.get('url') == probe['url'] for hit in result['hits']):
             raise ValueError('published search probe is missing')
 
-    def _reconcile_pending_commit(self):
+    def _reconcile_pending_commit(self, accepted_only=False):
         """Recognize an exact committed and pushed change after a lost reply.
 
         An unpushed exact commit is fenced by a same-tree child of its parent,
@@ -232,43 +232,39 @@ class Adapter:
             return
         component, previous, old, target = self.pending_commit
         if self._git('status', '--porcelain', '--untracked-files=all'):
-            self._recover_preserved_checkout(component, previous, old)
+            if accepted_only:
+                raise ValueError('compensation checkout is dirty; manual reconciliation required')
+            current = self._git('rev-parse', 'HEAD')
+            remote = gitops.remote_head(self.checkout)
+            if current != previous and remote == current:
+                self._verify_pending_tree(component, previous, current, old, target)
+                self._use_recovery_clone(current)
+            else:
+                self._recover_preserved_checkout(component, previous, old)
             return
         if self._git('symbolic-ref', '--quiet', '--short', 'HEAD') != 'main':
             raise ValueError('pending commit checkout is not main')
         current = self._git('rev-parse', 'HEAD')
         remote = gitops.remote_head(self.checkout)
         if current == previous and remote == previous:
+            if accepted_only:
+                raise ValueError('compensation was not confirmed on remote')
             self.head = previous
             self.pending_commit = None
             return
+        if accepted_only and remote != current:
+            raise ValueError('compensation push outcome is uncertain')
         if remote not in (previous, current):
             raise ValueError('pending commit remote state is uncertain')
-        parents = self._git('rev-list', '--parents', '-n', '1', current).split()
-        relative = f'deploy/k8s/{component}.yaml'
-        changed = self._git('diff-tree', '--no-commit-id', '--name-only', '-r', previous, current).splitlines()
-        if parents != [current, previous]:
-            raise ValueError('pending commit is not the expected direct child')
-        if changed != [relative]:
+        try:
+            expected = self._verify_pending_tree(component, previous, current, old, target)
+            if (self.checkout / f'deploy/k8s/{component}.yaml').read_bytes() != expected:
+                raise ValueError('pending checkout differs from commit')
+        except ValueError:
             if remote == previous:
                 self._recover_preserved_checkout(component, previous, old)
                 return
-            raise ValueError('pending commit changes unexpected files')
-        def blob(revision):
-            return subprocess.run(['git', '-C', str(self.checkout), 'show', f'{revision}:{relative}'],
-                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
-        before, after = blob(previous), blob(current)
-        pattern = re.compile(rb'^([ \t]*image:[ \t]*)([^\s]+)([ \t]*)$', re.MULTILINE)
-        matches = list(pattern.finditer(before))
-        if len(matches) != 1 or matches[0].group(2) != old.encode():
-            raise ValueError('pending commit source image differs')
-        found = matches[0]
-        expected = before[:found.start(2)] + target.encode() + before[found.end(2):]
-        if after != expected or (self.checkout / relative).read_bytes() != expected:
-            if remote == previous:
-                self._recover_preserved_checkout(component, previous, old)
-                return
-            raise ValueError('pending commit includes unexpected changes')
+            raise
         if remote == previous:
             # Whichever of the delayed push and this fence first updates the
             # ref wins the same lease. A fence has exactly the previous tree;
@@ -302,6 +298,26 @@ class Adapter:
         self.head = current
         self.pending_commit = None
 
+    def _verify_pending_tree(self, component, previous, current, old, target):
+        relative = f'deploy/k8s/{component}.yaml'
+        parents = self._git('rev-list', '--parents', '-n', '1', current).split()
+        changed = self._git('diff-tree', '--no-commit-id', '--name-only', '-r', previous, current).splitlines()
+        if parents != [current, previous] or changed != [relative]:
+            raise ValueError('pending commit is not the expected image-only direct child')
+        def blob(revision):
+            return subprocess.run(['git', '-C', str(self.checkout), 'show', f'{revision}:{relative}'],
+                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        before, after = blob(previous), blob(current)
+        pattern = re.compile(rb'^([ \t]*image:[ \t]*)([^\s]+)([ \t]*)$', re.MULTILINE)
+        matches = list(pattern.finditer(before))
+        if len(matches) != 1 or matches[0].group(2) != old.encode():
+            raise ValueError('pending commit source image differs')
+        found = matches[0]
+        expected = before[:found.start(2)] + target.encode() + before[found.end(2):]
+        if after != expected:
+            raise ValueError('pending commit includes unexpected changes')
+        return expected
+
     def _recover_preserved_checkout(self, component, previous, old):
         """Fence and recover from a clone, leaving all local work untouched."""
         current = self._git('rev-parse', 'HEAD')
@@ -330,6 +346,11 @@ class Adapter:
             pass
         if gitops.remote_head(self.checkout) != fence:
             raise ValueError('dirty checkout fence outcome is uncertain')
+        self._use_recovery_clone(fence)
+
+    def _use_recovery_clone(self, revision):
+        if self.recovery_checkout is not None:
+            raise ValueError('nested recovery checkout requires manual reconciliation')
         origin = self._git('remote', 'get-url', 'origin')
         name, email = self._git('config', 'user.name'), self._git('config', 'user.email')
         self.recovery_checkout = tempfile.TemporaryDirectory(prefix='shirone-release-recovery-')
@@ -339,7 +360,7 @@ class Adapter:
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
             gitops.git(clone, 'config', 'user.name', name)
             gitops.git(clone, 'config', 'user.email', email)
-            if (gitops.git(clone, 'rev-parse', 'HEAD') != fence or gitops.remote_head(clone) != fence or
+            if (gitops.git(clone, 'rev-parse', 'HEAD') != revision or gitops.remote_head(clone) != revision or
                     gitops.git(clone, 'status', '--porcelain', '--untracked-files=all')):
                 raise ValueError('recovery clone differs from fenced remote')
         except Exception:
@@ -348,7 +369,7 @@ class Adapter:
             raise
         self.preserved_checkout = self.checkout
         self.checkout = clone
-        self.head = fence
+        self.head = revision
         self.pending_commit = None
 
     def restore(self, admission, snapshot):
@@ -362,7 +383,14 @@ class Adapter:
             manifest = (self.checkout / 'deploy/k8s' / f'{component}.yaml').read_text()
             images = re.findall(r'^[ \t]*image:[ \t]*([^\s]+)[ \t]*$', manifest, re.MULTILINE)
             if images == [target] and target != old['image']:
-                self.head = gitops.commit_manifest(self.checkout, component, self.head, target, old['image'])
+                self.pending_commit = (component, self.head, target, old['image'])
+                try:
+                    self.head = gitops.commit_manifest(self.checkout, component, self.head, target, old['image'])
+                    self.pending_commit = None
+                except Exception:
+                    # Never retry a compensation. Continue only if the exact
+                    # direct-child image-only commit is already on remote.
+                    self._reconcile_pending_commit(accepted_only=True)
             elif images != [old['image']]:
                 raise ValueError('unknown manifest state; manual reconciliation required')
             if live['image'] == target and target != old['image']:

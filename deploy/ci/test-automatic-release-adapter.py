@@ -102,6 +102,59 @@ class RealGitAdapterTests(unittest.TestCase):
         self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
         self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
 
+    def test_pushed_commit_with_concurrent_dirty_edit_uses_clean_clone(self):
+        real_commit = mod.gitops.commit_manifest
+        note = self.f.repo / 'user-note.txt'
+        def commit_then_lose_reply(repo, component, expected, old, new):
+            result = real_commit(repo, component, expected, old, new)
+            if component == 'ssr' and new.endswith(self.targets['ssr']):
+                note.write_text('keep this user edit\n')
+                raise TimeoutError('push succeeded but reply was lost')
+            return result
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=commit_then_lose_reply):
+            with self.assertRaisesRegex(RuntimeError, 'original checkout preserved for review'):
+                self.run_transaction()
+        self.assertEqual(self.live, self.original)
+        self.assertEqual(self.calls, ['promote-cms', 'restore-cms'])
+        self.assertEqual(note.read_text(), 'keep this user edit\n')
+        self.assertNotEqual(self.f.git('rev-parse', 'HEAD'), mod.gitops.remote_head(self.f.repo))
+
+    def test_lost_compensation_reply_is_verified_without_retry(self):
+        self.fail_ssr = True
+        real_commit = mod.gitops.commit_manifest
+        calls = []
+        def commit_then_lose_reply(repo, component, expected, old, new):
+            calls.append((component, new))
+            result = real_commit(repo, component, expected, old, new)
+            if component == 'ssr' and new == self.original['ssr']['image']:
+                raise TimeoutError('compensation pushed but reply lost')
+            return result
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=commit_then_lose_reply):
+            with self.assertRaisesRegex(RuntimeError, 'restored and verified'):
+                self.run_transaction()
+        self.assertEqual(calls.count(('ssr', self.original['ssr']['image'])), 1)
+        self.assertEqual(self.live, self.original)
+        self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
+
+    def test_unconfirmed_compensation_is_not_retried(self):
+        self.fail_ssr = True
+        real_commit = mod.gitops.commit_manifest
+        calls = []
+        def unconfirmed_compensation(repo, component, expected, old, new):
+            calls.append((component, new))
+            if component == 'ssr' and new == self.original['ssr']['image']:
+                path = self.f.repo / 'deploy/k8s/ssr.yaml'
+                path.write_text(path.read_text().replace(old, new))
+                self.f.git('add', 'deploy/k8s/ssr.yaml')
+                self.f.git('commit', '-qm', 'unconfirmed compensation')
+                raise TimeoutError('compensation push uncertain')
+            return real_commit(repo, component, expected, old, new)
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=unconfirmed_compensation):
+            with self.assertRaisesRegex(RuntimeError, 'restoration is unverified'):
+                self.run_transaction()
+        self.assertEqual(calls.count(('ssr', self.original['ssr']['image'])), 1)
+        self.assertNotEqual(self.f.git('rev-parse', 'HEAD'), mod.gitops.remote_head(self.f.repo))
+
     def test_precommit_hook_failure_restores_live_and_preserves_all_local_changes(self):
         hook = self.f.repo / '.git/hooks/pre-commit'
         hook.write_text('#!/bin/sh\nif git diff --cached --name-only | grep -qx deploy/k8s/ssr.yaml; then\n'
