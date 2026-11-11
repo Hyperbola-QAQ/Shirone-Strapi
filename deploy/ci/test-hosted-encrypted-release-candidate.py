@@ -19,10 +19,17 @@ class WorkflowTests(unittest.TestCase):
     def setUpClass(cls):
         cls.doc = yaml.load((HERE / 'hosted-encrypted-release-candidate.yml').read_text(), Loader=yaml.BaseLoader)
 
-    def test_manual_only_and_disabled_by_location(self):
-        self.assertEqual(set(self.doc['on']), {'workflow_dispatch'})
+    def test_main_push_only_and_deployment_manifests_do_not_retrigger(self):
+        self.assertEqual(set(self.doc['on']), {'workflow_dispatch', 'push'})
+        self.assertEqual(self.doc['on']['push']['branches'], ['main'])
+        self.assertEqual(self.doc['on']['push']['paths-ignore'], ['deploy/k8s/**'])
         self.assertEqual(self.doc['permissions'], {})
         self.assertNotEqual(HERE.parent.parent.name, '.github')
+
+    def test_push_candidate_preserves_the_proven_manual_jobs(self):
+        installed = yaml.load((HERE.parent.parent / '.github/workflows/shirone-release.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(self.doc['jobs'], installed['jobs'])
+        self.assertEqual(self.doc['concurrency'], installed['concurrency'])
 
     def test_build_has_no_signing_or_package_privileges(self):
         job = self.doc['jobs']['build_test_encrypt']

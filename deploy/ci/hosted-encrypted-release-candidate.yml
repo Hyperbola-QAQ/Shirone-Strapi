@@ -1,10 +1,12 @@
-# REVIEW CANDIDATE ONLY. Outside .github/workflows and not active.
-# Before installation as .github/workflows/shirone-release.yml, independently
-# provision/review deploy/ci/release-recipient.txt and test runner capacity,
-# attestation, artifact retention, extraction, promotion, and rollback.
+# INACTIVE CANDIDATE: outside .github/workflows.
+# Main pushes build and sign; deployment remains separately guarded.
 name: Shirone encrypted release candidate
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - deploy/k8s/**
 permissions: {}
 concurrency:
   group: shirone-encrypted-release
@@ -38,6 +40,13 @@ jobs:
           recipient=$(cat deploy/ci/release-recipient.txt)
           [[ "$recipient" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$ ]]
           [[ "$(wc -l < deploy/ci/release-recipient.txt)" -eq 1 ]]
+      - name: Check disposable runner disk headroom
+        run: |
+          set -euo pipefail
+          available_kib=$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')
+          [[ "$available_kib" =~ ^[0-9]+$ && "$available_kib" -ge 10485760 ]] || {
+            echo 'Less than 10 GiB is available on the disposable runner.' >&2; exit 1;
+          }
       - name: Install checksum-pinned tools
         run: |
           set -euo pipefail

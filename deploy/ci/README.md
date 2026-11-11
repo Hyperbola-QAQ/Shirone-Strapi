@@ -9,6 +9,16 @@
 > Mizuki workflows remain disabled. Much of the candidate discussion below
 > records earlier investigations and should be read in that context.
 
+The inactive `hosted-encrypted-release-candidate.yml` proposes adding a
+`main` push trigger to the proven manual release jobs. A push that changes
+only `deploy/k8s/**` is ignored, so the manifest commits used by the guarded
+promotion do not produce another release. A mixed commit containing a
+non-manifest file still starts a release. The existing current-main check
+rejects queued runs whose source has since been superseded. Automatic image
+promotion is not included; the trusted operator must verify both attestations
+and explicitly run the guarded Ansible deployment. This candidate is not
+installed and does not enable the old workflows.
+
 Except for the installed workflow described above, files in this directory
 are not active GitHub Actions workflows. The legacy
 `CI` and `Deploy Mizuki to Kubernetes` workflows remain disabled; do not install
