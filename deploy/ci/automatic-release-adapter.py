@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import tempfile
 
 HERE = Path(__file__).resolve().parent
 
@@ -29,8 +30,8 @@ promotion = module('promote-encrypted-candidate')
 image_pattern = re.compile(r'^192\.168\.86\.100:30500/shirone/(cms|ssr)@sha256:[0-9a-f]{64}$')
 
 
-def command(*args, cwd=None):
-    return subprocess.run(args, cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout
+def command(*args, cwd=None, env=None):
+    return subprocess.run(args, cwd=cwd, env=env, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout
 
 
 class Adapter:
@@ -80,6 +81,9 @@ class Adapter:
                 'manifests': signed['manifests']}
 
     def snapshot(self, admission):
+        directory = self.previous_record.parent.stat()
+        if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or directory.st_mode & 0o077:
+            raise ValueError('previous release record directory is not private')
         fd = os.open(self.previous_record, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             info = os.fstat(fd)
@@ -99,7 +103,12 @@ class Adapter:
         # Conservative compatibility gate: no CMS or its dependency inputs may
         # change. CMS migrations need a separate reviewed recovery procedure.
         changed = self._git('diff', '--name-only', previous['source'], admission['source'], '--',
-                            'cms', 'Dockerfile', 'package.json', 'pnpm-lock.yaml')
+                            'cms', 'Dockerfile', 'package.json', 'pnpm-lock.yaml',
+                            '.github/workflows/shirone-release.yml',
+                            'deploy/ci/build-tested-oci-candidate.sh',
+                            'deploy/ci/build-encrypted-release-candidate.sh',
+                            'deploy/ci/rebuild-hosted-bases-candidate.sh',
+                            'deploy/ci/Dockerfile.node-reconstruction-candidate')
         if changed:
             raise ValueError('CMS changed; automatic rollback compatibility is not established')
         components = {name: self._live(name) for name in ('cms', 'ssr')}
@@ -111,11 +120,48 @@ class Adapter:
             if images != [value['image']]:
                 raise ValueError('live image and source manifest disagree')
         self.head = admission['source']
-        return {'rollback_safe': True, 'components': components, 'source': admission['source']}
+        return {'rollback_safe': True, 'components': components, 'source': admission['source'],
+                'previous_source': previous['source']}
 
     def preview(self, admission, snapshot):
         if gitops.remote_head(self.checkout) != self.head:
             raise ValueError('main changed before promotion')
+        ops = Path('/home/hyperbola/Work/ansible-debian-k8s')
+        inventory = json.loads(command('ansible-inventory', '-i', str(ops / 'inventory/hosts.yml'), '--host', 'hyqaq-imini'))
+        if inventory.get('ansible_host') != '192.168.86.11' or inventory.get('ansible_user') != 'hyperbola':
+            raise ValueError('Ansible inventory identity differs')
+        with tempfile.TemporaryDirectory(prefix='shirone-release-preview-') as scratch_name:
+            scratch = Path(scratch_name)
+            plain = scratch / 'release.tar'
+            promotion.crypto.decrypt(self.ciphertext, plain, self.key, self.recipient,
+                                     admission['source'], admission['signer'], admission['ciphertext_digest'],
+                                     admission['manifests'])
+            images = scratch / 'images'
+            promotion.env.inspect(plain, admission['source'],
+                                  promotion.crypto.recipient_fingerprint(self.recipient),
+                                  admission['manifests'], images, verify_oci=True)
+            manifest_dir = scratch / 'deploy/k8s'
+            manifest_dir.mkdir(parents=True)
+            for component in ('cms', 'ssr'):
+                playbook = ops / f'update_shirone_{component}_image.yml'
+                reviewed = self.checkout / 'deploy/ansible' / f'update-{component}-image.yml'
+                if playbook.read_bytes() != reviewed.read_bytes():
+                    raise ValueError('Ansible playbook differs from reviewed source')
+                manifest = (self.checkout / 'deploy/k8s' / f'{component}.yaml').read_text()
+                old = snapshot['components'][component]['image']
+                target = f"192.168.86.100:30500/shirone/{component}@{admission['manifests'][component]}"
+                if manifest.count(old) != 1:
+                    raise ValueError('unexpected preflight manifest')
+                (manifest_dir / f'{component}.yaml').write_text(manifest.replace(old, target))
+                environment = dict(os.environ, ANSIBLE_CONFIG=str(ops / 'ansible.cfg'),
+                                   ANSIBLE_HOST_KEY_CHECKING='True', ANSIBLE_BECOME='false', SHIRONE_WORKSPACE=str(scratch))
+                for name in ('ANSIBLE_SSH_ARGS', 'ANSIBLE_SSH_COMMON_ARGS', 'ANSIBLE_SSH_EXTRA_ARGS', 'ANSIBLE_SSH_EXECUTABLE'):
+                    environment.pop(name, None)
+                command('ansible-playbook', '-i', '192.168.86.11,', '-u', 'hyperbola', str(playbook),
+                        '-e', '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}',
+                        '-e', 'shirone_preview_hosts=192.168.86.11',
+                        '-e', f"shirone_{component}_uid={snapshot['components'][component]['uid']}",
+                        '-e', f'shirone_previous_image={old}', cwd=scratch, env=environment)
 
     def promote(self, component, admission, snapshot):
         old = snapshot['components'][component]['image']
@@ -136,6 +182,9 @@ class Adapter:
             os.chdir(original)
 
     def verify(self, component, admission, snapshot):
+        command('ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+                'hyperbola@192.168.86.11', 'kubectl', '--kubeconfig=/home/hyperbola/.kube/config',
+                '-n', 'mizuki', 'rollout', 'status', f'deployment/shirone-{component}', '--timeout=180s')
         expected = f"192.168.86.100:30500/shirone/{component}@{admission['manifests'][component]}"
         current = self._live(component)
         if current != {'uid': snapshot['components'][component]['uid'], 'image': expected}:
@@ -167,6 +216,9 @@ class Adapter:
                 self._git('status', '--porcelain', '--untracked-files=all')):
             raise ValueError('restored Git state is not current and clean')
         for component in ('cms', 'ssr'):
+            command('ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+                    'hyperbola@192.168.86.11', 'kubectl', '--kubeconfig=/home/hyperbola/.kube/config',
+                    '-n', 'mizuki', 'rollout', 'status', f'deployment/shirone-{component}', '--timeout=180s')
             if self._live(component) != snapshot['components'][component]:
                 raise ValueError('restored deployment differs')
             manifest = (self.checkout / 'deploy/k8s' / f'{component}.yaml').read_text()
@@ -174,3 +226,35 @@ class Adapter:
             if images != [snapshot['components'][component]['image']]:
                 raise ValueError('restored manifest differs')
         self.verify_all(admission, snapshot)
+
+    def _write_record(self, source, components):
+        # The caller holds the controller lock and has verified live state.
+        # Atomic replacement avoids exposing a partially written record; if
+        # interrupted, the write-once reservation requires reconciliation.
+        parent = self.previous_record.parent
+        info = parent.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError('release record directory is not private')
+        fd, name = tempfile.mkstemp(prefix='.previous-release-', dir=parent)
+        try:
+            with os.fdopen(fd, 'w') as file:
+                json.dump({'source': source, 'components': components, 'rollback_compatible': True}, file, sort_keys=True)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(name, self.previous_record)
+            dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+
+    def finalize(self, admission, snapshot):
+        self._write_record(admission['source'], {name: self._live(name) for name in ('cms', 'ssr')})
+
+    def restored(self, admission, snapshot):
+        # Snapshot retains the old source even if finalize had succeeded before
+        # a later error, avoiding incorrectly recording the new build on rollback.
+        self._write_record(snapshot['previous_source'], snapshot['components'])

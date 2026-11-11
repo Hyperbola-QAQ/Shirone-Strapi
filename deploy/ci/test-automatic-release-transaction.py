@@ -32,6 +32,8 @@ class Adapter:
     def verify_all(self, admission, snapshot): self.call('verify-all')
     def restore(self, admission, snapshot): self.call('restore')
     def verify_restored(self, admission, snapshot): self.call('verify-restored')
+    def finalize(self, admission, snapshot): self.call('finalize')
+    def restored(self, admission, snapshot): self.call('restored')
 
 
 class TransactionTests(unittest.TestCase):
@@ -43,7 +45,7 @@ class TransactionTests(unittest.TestCase):
             adapter = Adapter()
             self.execute(adapter, directory)
             self.assertEqual(adapter.calls, ['admit', 'snapshot', 'preview', 'promote-cms', 'verify-cms',
-                                             'promote-ssr', 'verify-ssr', 'verify-all'])
+                                             'promote-ssr', 'verify-ssr', 'verify-all', 'finalize'])
             self.assertTrue((Path(directory) / 'run-12-complete.json').is_file())
             with self.assertRaises(FileExistsError): self.execute(Adapter(), directory)
 
@@ -53,7 +55,7 @@ class TransactionTests(unittest.TestCase):
                 adapter = Adapter(failure)
                 with self.assertRaisesRegex(RuntimeError, 'restored and verified'):
                     self.execute(adapter, directory)
-                self.assertEqual(adapter.calls[-2:], ['restore', 'verify-restored'])
+                self.assertEqual(adapter.calls[-3:], ['restore', 'verify-restored', 'restored'])
                 self.assertTrue((Path(directory) / 'run-12-restored.json').is_file())
                 with self.assertRaises(FileExistsError): self.execute(Adapter(), directory)
 

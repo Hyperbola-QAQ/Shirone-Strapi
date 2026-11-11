@@ -53,10 +53,15 @@ owner-only previous-release record bound to live images and UIDs. A CMS or
 dependency difference stops before deployment. Its tests exercise real Git
 commits and a simulated cluster, including an apply whose response is lost;
 they do not prove actual registry, Ansible, database, publication or search
-recovery. The current preview checks remote main only, the artifact files are
-not yet cryptographically bound to the selected run's downloaded artifact,
-and no node-pull or Ansible-admission preflight is performed. Do not schedule
-or treat it as production automation.
+recovery. The current preview validates the signed encrypted envelope and OCI
+archives and runs both reviewed Ansible playbooks in server-admission preview;
+this path has only been tested with mocked external commands. The files are
+downloaded by exact run and attempt name and checked against the artifact ID,
+but the new downloader has only simulated tests and previously observed large
+downloads from `gh` may still fail. No target-node pull preflight is performed.
+Successful releases atomically update the protected previous
+release record; interruption still requires reconciliation. Do not schedule or
+treat this as production automation.
 
 `automatic-release-git.py` implements the actual manifest-only Git step for an
 isolated controller checkout: it requires clean, exact local and remote main,

@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -41,6 +42,9 @@ class RealGitAdapterTests(unittest.TestCase):
         self.adapter._live = lambda name: dict(self.live[name])
         self.adapter.admit = lambda run, source: {'source': source, 'signer': source,
                                                   'ciphertext_digest': 'sha256:' + 'f' * 64, 'manifests': self.targets}
+        # Admission preview has its own integration requirements; the fixture
+        # below exercises real Git and simulated Ansible promotion/rollback.
+        self.adapter.preview = lambda admission, snapshot: None
         self.adapter.verify_all = lambda admission, snapshot: None
         self.calls = []
 
@@ -51,6 +55,8 @@ class RealGitAdapterTests(unittest.TestCase):
             raise TimeoutError('response lost after change')
 
     def command(self, *args, cwd=None):
+        if args[0] == 'ssh' and 'rollout' in args:
+            return ''
         if args[0] == 'bash' and args[1].endswith('promote-reviewed.sh'):
             component, uid, new = args[2], args[4], args[6]
             self.calls.append('restore-' + component)
@@ -69,6 +75,7 @@ class RealGitAdapterTests(unittest.TestCase):
         self.assertEqual(self.calls, ['promote-cms', 'promote-ssr'])
         self.assertEqual(self.live['cms']['image'], fixture.PREFIX + self.targets['cms'])
         self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
+        self.assertEqual(json.loads(self.record.read_text())['components'], self.live)
 
     def test_uncertain_second_apply_restores_both_manifests_and_live_images(self):
         self.fail_ssr = True
@@ -77,6 +84,7 @@ class RealGitAdapterTests(unittest.TestCase):
         self.assertEqual(self.live, self.original)
         self.assertEqual(self.calls, ['promote-cms', 'promote-ssr', 'restore-ssr', 'restore-cms'])
         self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
+        self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
 
     def test_unbound_previous_record_stops_before_git_changes(self):
         data = json.loads(self.record.read_text())
@@ -97,6 +105,46 @@ class RealGitAdapterTests(unittest.TestCase):
             self.run_transaction()
         self.assertEqual(self.live, self.original)
         self.assertEqual(self.calls, [])
+
+    def test_base_reconstruction_change_stops_before_promotion(self):
+        path = self.f.repo / 'deploy/ci/Dockerfile.node-reconstruction-candidate'
+        path.parent.mkdir(parents=True)
+        path.write_text('FROM example\n')
+        self.f.git('add', '.')
+        self.f.git('commit', '-qm', 'base change')
+        self.f.git('push', '-q', 'origin', 'main')
+        self.source = self.f.git('rev-parse', 'HEAD')
+        with self.assertRaisesRegex(ValueError, 'CMS changed'):
+            self.run_transaction()
+        self.assertEqual(self.live, self.original)
+
+    def test_public_previous_record_is_rejected(self):
+        self.record.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, 'unprotected'):
+            self.run_transaction()
+        self.assertEqual(self.live, self.original)
+
+    def test_preview_uses_both_reviewed_playbooks_after_verified_envelope(self):
+        destination = self.f.repo / 'deploy/ansible'
+        destination.mkdir(parents=True)
+        ops = Path('/home/hyperbola/Work/ansible-debian-k8s')
+        for name in ('cms', 'ssr'):
+            shutil.copyfile(ops / f'update_shirone_{name}_image.yml', destination / f'update-{name}-image.yml')
+        calls = []
+        def command(*args, **kwargs):
+            calls.append(args[0])
+            return json.dumps({'ansible_host': '192.168.86.11', 'ansible_user': 'hyperbola'}) if args[0] == 'ansible-inventory' else ''
+        admission = {'source': self.source, 'signer': self.source, 'ciphertext_digest': 'sha256:' + 'f' * 64,
+                     'manifests': self.targets}
+        self.adapter.head = self.source
+        with patch.object(mod, 'command', side_effect=command), \
+             patch.object(mod.promotion.crypto, 'decrypt') as decrypt, \
+             patch.object(mod.promotion.crypto, 'recipient_fingerprint', return_value='fingerprint'), \
+             patch.object(mod.promotion.env, 'inspect') as inspect:
+            mod.Adapter.preview(self.adapter, admission, {'components': self.original})
+        self.assertEqual(calls, ['ansible-inventory', 'ansible-playbook', 'ansible-playbook'])
+        decrypt.assert_called_once()
+        self.assertTrue(inspect.call_args.kwargs['verify_oci'])
 
 
 if __name__ == '__main__':

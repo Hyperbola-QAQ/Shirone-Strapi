@@ -57,6 +57,8 @@ def execute(adapter, directory, run_id, source):
                 adapter.verify(component, admission, snapshot)
                 record(lock, run_id, f'{component}-verified')
             adapter.verify_all(admission, snapshot)
+            record(lock, run_id, 'record-intent')
+            adapter.finalize(admission, snapshot)
             record(lock, run_id, 'complete')
         except Exception:
             # Inspect both Git and live deployments: the operation that raised
@@ -65,6 +67,7 @@ def execute(adapter, directory, run_id, source):
             try:
                 adapter.restore(admission, snapshot)
                 adapter.verify_restored(admission, snapshot)
+                adapter.restored(admission, snapshot)
                 record(lock, run_id, 'restored')
             except Exception as restore_error:
                 raise RuntimeError('Release failed; restoration is unverified and requires reconciliation') from restore_error
