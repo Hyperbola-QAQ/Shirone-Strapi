@@ -132,6 +132,9 @@ class Adapter:
     def preview(self, admission, snapshot):
         if gitops.remote_head(self.checkout) != self.head:
             raise ValueError('main changed before promotion')
+        # A pre-existing outage or withdrawn probe must stop the release
+        # before any manifest push or production change.
+        self.verify_all(admission, snapshot)
         ops = Path('/home/hyperbola/Work/ansible-debian-k8s')
         inventory = json.loads(command('ansible-inventory', '-i', str(ops / 'inventory/hosts.yml'), '--host', 'hyqaq-imini'))
         if inventory.get('ansible_host') != '192.168.86.11' or inventory.get('ansible_user') != 'hyperbola':

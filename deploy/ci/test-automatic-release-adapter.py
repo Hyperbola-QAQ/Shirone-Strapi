@@ -164,6 +164,13 @@ class RealGitAdapterTests(unittest.TestCase):
         with patch.object(mod, 'command', side_effect=responses), self.assertRaisesRegex(ValueError, 'search probe'):
             mod.Adapter.verify_all(self.adapter, {}, snapshot)
 
+    def test_preview_rejects_unhealthy_baseline_before_other_work(self):
+        self.adapter.head = self.source
+        self.adapter.verify_all = lambda admission, snapshot: (_ for _ in ()).throw(ValueError('search unavailable'))
+        with patch.object(mod, 'command') as command, self.assertRaisesRegex(ValueError, 'search unavailable'):
+            mod.Adapter.preview(self.adapter, {}, {})
+        command.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
