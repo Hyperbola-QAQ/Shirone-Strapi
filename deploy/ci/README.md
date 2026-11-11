@@ -9,6 +9,18 @@
 > Mizuki workflows remain disabled. Much of the candidate discussion below
 > records earlier investigations and should be read in that context.
 
+On 2026-11-11 an isolated Kubernetes namespace exercised the managed
+CMS and SSR image update playbooks against disposable Deployments. Both
+schedulable nodes pulled and executed each current signed image; each component
+then passed server-side preview, refusal of an incorrect Deployment UID, an
+old-to-new rolling update, and a guarded return to the old image with the
+same Deployment UID. The playbooks were checked byte-for-byte against the
+Ansible source and their test copies changed only the target namespace.
+The temporary namespace had default-deny networking and was confirmed deleted.
+This validates the guarded Kubernetes image update and reversal, not the full
+automatic controller, real GitHub artifact transfer, database compatibility,
+application recovery, or a production rollback. Production was not changed.
+
 The inactive `hosted-encrypted-release-candidate.yml` proposes adding a
 `main` push trigger to the proven manual release jobs. A push that changes
 only `deploy/k8s/**` is ignored, so the manifest commits used by the guarded
