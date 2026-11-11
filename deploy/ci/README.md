@@ -30,6 +30,14 @@ before unattended use. The controller's host and policy parent directories must
 be protected; `main` currently has no GitHub branch protection, so selecting a
 source SHA from GitHub alone is not independent approval.
 
+`automatic-release-lock.py` supplies a separate controller primitive: a
+non-blocking exclusive host lock and durable, write-once run reservations.
+Reservations survive process failure and reject blind replay; an operator must
+reconcile interrupted attempts. It is not connected to the gate or any service,
+does not track deployment phases or restore previous images, and has only
+isolated tests. A real controller must hold the lock from admission through
+cleanup and place the state directory on durable private storage.
+
 Except for the installed workflow described above, files in this directory
 are not active GitHub Actions workflows. The legacy
 `CI` and `Deploy Mizuki to Kubernetes` workflows remain disabled; do not install
