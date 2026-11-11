@@ -13,6 +13,7 @@ import re
 import stat
 import subprocess
 import tempfile
+from urllib.parse import urlencode
 
 HERE = Path(__file__).resolve().parent
 
@@ -95,11 +96,17 @@ class Adapter:
         finally:
             os.close(fd)
         previous = json.loads(raw, object_pairs_hook=promotion.metadata_verifier.unique)
-        if (not isinstance(previous, dict) or set(previous) != {'source', 'components', 'rollback_compatible'} or
+        if (not isinstance(previous, dict) or set(previous) != {'source', 'components', 'rollback_compatible', 'search_probe'} or
                 not isinstance(previous['source'], str) or not re.fullmatch(r'[0-9a-f]{40}', previous['source']) or
                 previous['rollback_compatible'] is not True or not isinstance(previous['components'], dict) or
                 set(previous['components']) != {'cms', 'ssr'}):
             raise ValueError('previous release record is incomplete')
+        probe = previous['search_probe']
+        if (not isinstance(probe, dict) or set(probe) != {'query', 'url'} or
+                not isinstance(probe['query'], str) or not 1 <= len(probe['query']) <= 120 or
+                not isinstance(probe['url'], str) or not probe['url'].startswith('/posts/') or
+                '\n' in probe['url'] or len(probe['url']) > 2048):
+            raise ValueError('invalid published search probe')
         # Conservative compatibility gate: no CMS or its dependency inputs may
         # change. CMS migrations need a separate reviewed recovery procedure.
         changed = self._git('diff', '--name-only', previous['source'], admission['source'], '--',
@@ -120,7 +127,7 @@ class Adapter:
                 raise ValueError('live image and source manifest disagree')
         self.head = admission['source']
         return {'rollback_safe': True, 'components': components, 'source': admission['source'],
-                'previous_source': previous['source']}
+                'previous_source': previous['source'], 'search_probe': probe}
 
     def preview(self, admission, snapshot):
         if gitops.remote_head(self.checkout) != self.head:
@@ -146,6 +153,13 @@ class Adapter:
                 reviewed = self.checkout / 'deploy/ansible' / f'update-{component}-image.yml'
                 if playbook.read_bytes() != reviewed.read_bytes():
                     raise ValueError('Ansible playbook differs from reviewed source')
+                # Execute the exact reviewed copy from the isolated workspace,
+                # as promote-reviewed.sh does, so unrelated encrypted project
+                # group vars are not loaded for this narrow playbook.
+                isolated_playbook = scratch / f'update-{component}-image.yml'
+                isolated_playbook.write_bytes(playbook.read_bytes())
+                if isolated_playbook.read_bytes() != reviewed.read_bytes():
+                    raise ValueError('isolated playbook copy differs')
                 manifest = (self.checkout / 'deploy/k8s' / f'{component}.yaml').read_text()
                 old = snapshot['components'][component]['image']
                 target = f"192.168.86.100:30500/shirone/{component}@{admission['manifests'][component]}"
@@ -156,7 +170,7 @@ class Adapter:
                                    ANSIBLE_HOST_KEY_CHECKING='True', ANSIBLE_BECOME='false', SHIRONE_WORKSPACE=str(scratch))
                 for name in ('ANSIBLE_SSH_ARGS', 'ANSIBLE_SSH_COMMON_ARGS', 'ANSIBLE_SSH_EXTRA_ARGS', 'ANSIBLE_SSH_EXECUTABLE'):
                     environment.pop(name, None)
-                command('ansible-playbook', '-i', '192.168.86.11,', '-u', 'hyperbola', str(playbook),
+                command('ansible-playbook', '-i', '192.168.86.11,', '-u', 'hyperbola', str(isolated_playbook),
                         '-e', '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}',
                         '-e', 'shirone_preview_hosts=192.168.86.11',
                         '-e', f"shirone_{component}_uid={snapshot['components'][component]['uid']}",
@@ -192,6 +206,12 @@ class Adapter:
     def verify_all(self, admission, snapshot):
         for url in ('https://hyperbola.cc/', 'https://strapi.hyperbola.cc/admin/'):
             command('curl', '--fail', '--silent', '--show-error', '--max-time', '20', '--output', '/dev/null', url)
+        probe = snapshot['search_probe']
+        result = json.loads(command('curl', '--fail', '--silent', '--show-error', '--location', '--max-time', '20',
+                                    'https://hyperbola.cc/api/search/?' + urlencode({'q': probe['query']})))
+        if not isinstance(result, dict) or not isinstance(result.get('hits'), list) or not any(
+                isinstance(hit, dict) and hit.get('url') == probe['url'] for hit in result['hits']):
+            raise ValueError('published search probe is missing')
 
     def restore(self, admission, snapshot):
         for component in ('ssr', 'cms'):
@@ -226,7 +246,7 @@ class Adapter:
                 raise ValueError('restored manifest differs')
         self.verify_all(admission, snapshot)
 
-    def _write_record(self, source, components):
+    def _write_record(self, source, components, search_probe):
         # The caller holds the controller lock and has verified live state.
         # Atomic replacement avoids exposing a partially written record; if
         # interrupted, the write-once reservation requires reconciliation.
@@ -237,7 +257,8 @@ class Adapter:
         fd, name = tempfile.mkstemp(prefix='.previous-release-', dir=parent)
         try:
             with os.fdopen(fd, 'w') as file:
-                json.dump({'source': source, 'components': components, 'rollback_compatible': True}, file, sort_keys=True)
+                json.dump({'source': source, 'components': components, 'rollback_compatible': True,
+                           'search_probe': search_probe}, file, sort_keys=True)
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(name, self.previous_record)
@@ -256,9 +277,9 @@ class Adapter:
             expected = f"192.168.86.100:30500/shirone/{name}@{admission['manifests'][name]}"
             if current != {'uid': snapshot['components'][name]['uid'], 'image': expected}:
                 raise ValueError('deployment changed before release record update')
-        self._write_record(admission['source'], components)
+        self._write_record(admission['source'], components, snapshot['search_probe'])
 
     def restored(self, admission, snapshot):
         # Snapshot retains the old source even if finalize had succeeded before
         # a later error, avoiding incorrectly recording the new build on rollback.
-        self._write_record(snapshot['previous_source'], snapshot['components'])
+        self._write_record(snapshot['previous_source'], snapshot['components'], snapshot['search_probe'])

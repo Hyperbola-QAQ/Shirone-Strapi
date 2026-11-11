@@ -35,7 +35,8 @@ class RealGitAdapterTests(unittest.TestCase):
         self.original = {k: dict(v) for k, v in self.live.items()}
         self.targets = {'cms': 'sha256:' + 'c' * 64, 'ssr': 'sha256:' + 'd' * 64, 'reconciler': 'sha256:' + 'e' * 64}
         self.record = self.f.root / 'previous.json'
-        self.record.write_text(json.dumps({'source': self.source, 'components': self.original, 'rollback_compatible': True}))
+        self.record.write_text(json.dumps({'source': self.source, 'components': self.original, 'rollback_compatible': True,
+                                           'search_probe': {'query': 'fixture', 'url': '/posts/fixture/'}}))
         self.record.chmod(0o600)
         self.adapter = mod.Adapter(self.f.repo, {'source': self.source, 'signer': self.source, 'workflow_id': 1},
                                    1, self.f.root / 'metadata', self.f.root / 'cipher', self.f.root / 'key', 'recipient', self.record)
@@ -153,6 +154,15 @@ class RealGitAdapterTests(unittest.TestCase):
         self.assertEqual(calls, ['ansible-inventory', 'ansible-playbook', 'ansible-playbook'])
         decrypt.assert_called_once()
         self.assertTrue(inspect.call_args.kwargs['verify_oci'])
+
+    def test_search_probe_requires_expected_published_url(self):
+        snapshot = {'search_probe': {'query': 'fixture', 'url': '/posts/fixture/'}}
+        responses = ['', '', json.dumps({'hits': [{'url': '/posts/fixture/'}]})]
+        with patch.object(mod, 'command', side_effect=responses):
+            mod.Adapter.verify_all(self.adapter, {}, snapshot)
+        responses = ['', '', json.dumps({'hits': [{'url': '/posts/other/'}]})]
+        with patch.object(mod, 'command', side_effect=responses), self.assertRaisesRegex(ValueError, 'search probe'):
+            mod.Adapter.verify_all(self.adapter, {}, snapshot)
 
 
 if __name__ == '__main__':
