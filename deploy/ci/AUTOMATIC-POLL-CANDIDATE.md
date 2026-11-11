@@ -58,6 +58,13 @@ local-target host/address checks. Tests mock GitHub and production changes;
 they do not prove unattended deployment, credential isolation, target-host
 configuration, or production recovery.
 
+The staged service explicitly sets `PYTHONPATH` to the private tool directory
+because the poller itself runs under system Python, not an Ansible wrapper. A
+clean local Debian 13 container with no system PyYAML successfully loaded the
+pinned PyYAML 6.0.2 and packaging 25.0 from that private path and ran the real
+poller's `--help`. This checks imports only; it does not start the poller or
+exercise target-host credentials or deployment.
+
 ## Runtime preparation candidate
 
 `install-controller-tools.py` prepares a new owner-only user directory, using
