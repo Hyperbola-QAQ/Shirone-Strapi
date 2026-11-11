@@ -222,8 +222,9 @@ class Adapter:
     def _reconcile_pending_commit(self):
         """Recognize an exact committed and pushed change after a lost reply.
 
-        An unpushed or otherwise ambiguous commit is deliberately left intact
-        for operator reconciliation. Never reset or retry an uncertain push.
+        An unpushed exact commit is fenced by a same-tree child of its parent,
+        pushed with a server-enforced lease. This prevents a delayed original
+        push from winning after recovery. Any other state remains untouched.
         """
         if self.pending_commit is None:
             return
@@ -238,7 +239,7 @@ class Adapter:
             self.head = previous
             self.pending_commit = None
             return
-        if remote != current:
+        if remote not in (previous, current):
             raise ValueError('pending commit remote state is uncertain')
         parents = self._git('rev-list', '--parents', '-n', '1', current).split()
         relative = f'deploy/k8s/{component}.yaml'
@@ -257,6 +258,36 @@ class Adapter:
         expected = before[:found.start(2)] + target.encode() + before[found.end(2):]
         if after != expected or (self.checkout / relative).read_bytes() != expected:
             raise ValueError('pending commit includes unexpected changes')
+        if remote == previous:
+            # Whichever of the delayed push and this fence first updates the
+            # ref wins the same lease. A fence has exactly the previous tree;
+            # it never publishes the candidate or overwrites another writer.
+            tree = self._git('rev-parse', f'{previous}^{{tree}}')
+            fence = self._git('commit-tree', tree, '-p', previous,
+                              '-m', 'ci: fence uncertain release push')
+            if not re.fullmatch(r'[0-9a-f]{40}', fence):
+                raise ValueError('invalid pending commit fence')
+            try:
+                self._git('push', f'--force-with-lease=refs/heads/main:{previous}',
+                          'origin', f'{fence}:refs/heads/main')
+            except (subprocess.CalledProcessError, TimeoutError):
+                # A lost response can mean either our fence or the original
+                # push succeeded. Inspect the remote once; never force either.
+                pass
+            remote = gitops.remote_head(self.checkout)
+            if remote == fence:
+                if self._git('status', '--porcelain', '--untracked-files=all') or self._git('rev-parse', 'HEAD') != current:
+                    raise ValueError('checkout changed before accepting fence')
+                # Only the fully checked controller-generated commit is being
+                # abandoned locally; --keep refuses concurrent file changes.
+                self._git('reset', '--keep', fence)
+                if gitops.remote_head(self.checkout) != fence:
+                    raise ValueError('remote changed after accepting fence')
+                self.head = fence
+                self.pending_commit = None
+                return
+            if remote != current:
+                raise ValueError('pending commit fence outcome is uncertain')
         self.head = current
         self.pending_commit = None
 

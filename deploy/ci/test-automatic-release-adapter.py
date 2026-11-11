@@ -102,7 +102,7 @@ class RealGitAdapterTests(unittest.TestCase):
         self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
         self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
 
-    def test_unpushed_pending_commit_is_left_for_manual_reconciliation(self):
+    def test_unpushed_pending_commit_is_fenced_without_publishing_it(self):
         real_commit = mod.gitops.commit_manifest
         def lose_push(repo, component, expected, old, new):
             if component != 'cms':
@@ -113,10 +113,82 @@ class RealGitAdapterTests(unittest.TestCase):
             self.f.git('commit', '-qm', 'simulated failed push')
             raise TimeoutError('push status uncertain')
         with patch.object(mod.gitops, 'commit_manifest', side_effect=lose_push):
-            with self.assertRaisesRegex(RuntimeError, 'restoration is unverified'):
+            with self.assertRaisesRegex(RuntimeError, 'restored and verified'):
                 self.run_transaction()
         self.assertNotEqual(self.f.git('rev-parse', 'HEAD'), self.source)
-        self.assertEqual(mod.gitops.remote_head(self.f.repo), self.source)
+        self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
+        self.assertEqual(self.f.git('rev-parse', 'HEAD^{tree}'), self.f.git('rev-parse', f'{self.source}^{{tree}}'))
+        self.assertEqual(self.live, self.original)
+
+    def test_lost_fence_reply_recovers_after_verifying_remote(self):
+        real_commit = mod.gitops.commit_manifest
+        real_git = mod.gitops.git
+        def lose_push(repo, component, expected, old, new):
+            if component != 'cms': return real_commit(repo, component, expected, old, new)
+            path = self.f.repo / 'deploy/k8s/cms.yaml'
+            path.write_text(path.read_text().replace(old, new))
+            self.f.git('add', 'deploy/k8s/cms.yaml')
+            self.f.git('commit', '-qm', 'simulated failed push')
+            raise TimeoutError('push status uncertain')
+        def lose_fence_reply(repo, *args):
+            result = real_git(repo, *args)
+            if args and args[0] == 'push' and 'HEAD:refs/heads/main' not in args:
+                raise TimeoutError('fence succeeded but reply was lost')
+            return result
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=lose_push), \
+             patch.object(mod.gitops, 'git', side_effect=lose_fence_reply):
+            with self.assertRaisesRegex(RuntimeError, 'restored and verified'):
+                self.run_transaction()
+        self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
+        self.assertEqual(self.live, self.original)
+
+    def test_original_push_wins_race_with_fence_and_is_reverted(self):
+        real_commit = mod.gitops.commit_manifest
+        real_git = mod.gitops.git
+        def delay_push(repo, component, expected, old, new):
+            if component != 'cms' or not new.endswith(self.targets['cms']):
+                return real_commit(repo, component, expected, old, new)
+            path = self.f.repo / 'deploy/k8s/cms.yaml'
+            path.write_text(path.read_text().replace(old, new))
+            self.f.git('add', 'deploy/k8s/cms.yaml')
+            self.f.git('commit', '-qm', 'simulated delayed push')
+            raise TimeoutError('push status uncertain')
+        def race_fence(repo, *args):
+            if args and args[0] == 'push' and 'HEAD:refs/heads/main' not in args:
+                real_git(repo, 'push', f'--force-with-lease=refs/heads/main:{self.source}',
+                         'origin', 'HEAD:refs/heads/main')
+                raise TimeoutError('original push won the race')
+            return real_git(repo, *args)
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=delay_push), \
+             patch.object(mod.gitops, 'git', side_effect=race_fence):
+            with self.assertRaisesRegex(RuntimeError, 'restored and verified'):
+                self.run_transaction()
+        self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
+        self.assertEqual(self.live, self.original)
+
+    def test_fence_does_not_overwrite_concurrent_unrelated_commit(self):
+        real_commit = mod.gitops.commit_manifest
+        real_git = mod.gitops.git
+        external = []
+        def delay_push(repo, component, expected, old, new):
+            if component != 'cms': return real_commit(repo, component, expected, old, new)
+            path = self.f.repo / 'deploy/k8s/cms.yaml'
+            path.write_text(path.read_text().replace(old, new))
+            self.f.git('add', 'deploy/k8s/cms.yaml')
+            self.f.git('commit', '-qm', 'simulated delayed push')
+            raise TimeoutError('push status uncertain')
+        def race_fence(repo, *args):
+            if args and args[0] == 'push' and 'HEAD:refs/heads/main' not in args:
+                tree = self.f.git('rev-parse', f'{self.source}^{{tree}}')
+                external.append(self.f.git('commit-tree', tree, '-p', self.source, '-m', 'external change'))
+                self.f.git('push', '-q', 'origin', f'{external[-1]}:refs/heads/main')
+            return real_git(repo, *args)
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=delay_push), \
+             patch.object(mod.gitops, 'git', side_effect=race_fence):
+            with self.assertRaisesRegex(RuntimeError, 'restoration is unverified'):
+                self.run_transaction()
+        self.assertEqual(mod.gitops.remote_head(self.f.repo), external[0])
+        self.assertNotEqual(self.f.git('rev-parse', 'HEAD'), external[0])
         self.assertEqual(self.live, self.original)
 
     def test_tampered_pushed_manifest_is_not_adopted(self):
