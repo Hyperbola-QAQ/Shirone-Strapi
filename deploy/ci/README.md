@@ -49,6 +49,13 @@ test double today: actual Git compare-and-swap, signed artifact download,
 Ansible deployment, schema compatibility and restoration are not wired in.
 Do not schedule or treat it as production automation.
 
+`automatic-release-git.py` implements the actual manifest-only Git step for an
+isolated controller checkout: it requires clean, exact local and remote main,
+changes one expected image, checks the committed bytes, and pushes with an exact
+parent lease. A conflict or ambiguous network failure requires reconciliation.
+Its isolated real-Git tests cover stale main, concurrent rewind, unexpected
+manifest changes and commit hooks. It is not yet connected to deployment.
+
 Except for the installed workflow described above, files in this directory
 are not active GitHub Actions workflows. The legacy
 `CI` and `Deploy Mizuki to Kubernetes` workflows remain disabled; do not install
