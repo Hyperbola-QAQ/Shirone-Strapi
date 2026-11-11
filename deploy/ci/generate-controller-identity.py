@@ -5,12 +5,23 @@ This does not authorize the SSH key, configure GitHub access, change the
 release recipient, or enable a service. A pre-existing identity is never
 overwritten; an operator must reconcile any previous partial attempt.
 """
+import ctypes
 import os
 from pathlib import Path
 import re
 import stat
 import subprocess
 import tempfile
+
+
+def rename_noreplace(source, destination):
+    libc = ctypes.CDLL(None, use_errno=True)
+    if not hasattr(libc, 'renameat2'):
+        raise OSError('atomic no-replace rename is unavailable')
+    libc.renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    if libc.renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
 
 
 def command(*args):
@@ -46,9 +57,7 @@ def generate(state, age_keygen):
                 if not stat.S_ISREG(item.st_mode) or item.st_uid != os.getuid():
                     raise ValueError('unexpected identity file')
                 path.chmod(0o600)
-            if os.path.lexists(destination):
-                raise FileExistsError('identity destination appeared')
-            os.rename(root, destination)
+            rename_noreplace(root, destination)
             directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
                 os.fsync(directory)

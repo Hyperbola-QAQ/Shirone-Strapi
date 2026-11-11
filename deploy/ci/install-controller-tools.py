@@ -5,6 +5,7 @@ No credentials are generated, copied, read or printed. The caller must supply
 an existing private parent directory. This does not configure or start a service.
 """
 import argparse
+import ctypes
 import hashlib
 import os
 from pathlib import Path
@@ -29,6 +30,17 @@ GH_ARCH = ('https://mirrors.tuna.tsinghua.edu.cn/archlinux/extra/os/x86_64/githu
 GH_OFFICIAL = ('https://github.com/cli/cli/releases/download/v2.102.1/gh_2.102.1_linux_amd64.tar.gz', '77b9e297e94c50336823d0f84de7ef1be60cba704601fa0d98f129f47a94987b')
 AGE_ARCH = ('https://mirrors.tuna.tsinghua.edu.cn/archlinux/extra/os/x86_64/age-1.3.2-1-x86_64.pkg.tar.zst', 'c82edb230b872f8bd2d30f240722806038ae3613ccac43fa99df5e7e8a2d4196')
 AGE_OFFICIAL = ('https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz', 'cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10')
+
+
+def rename_noreplace(source, destination):
+    """Atomically publish only if the destination does not already exist."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if not hasattr(libc, 'renameat2'):
+        raise OSError('atomic no-replace rename is unavailable')
+    libc.renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    if libc.renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
 
 
 def run(*args, cwd=None, env=None):
@@ -124,11 +136,22 @@ def install(destination):
                                              ('age-keygen', 'usr/bin/age-keygen', 'age/age-keygen'))),
         ):
             archive, kind = tool_archive(mirror, official, downloads, label)
-            for binary, arch_member, official_member in binaries:
-                member = arch_member if kind == 'arch' else official_member
-                run('tar', '--zstd' if kind == 'arch' else '-z', '-xf', str(archive), '-C', str(work), member)
-                shutil.copyfile(work / member, bindir / binary)
-                (bindir / binary).chmod(0o700)
+            def stage_archive(archive_kind):
+                for binary, arch_member, official_member in binaries:
+                    member = arch_member if archive_kind == 'arch' else official_member
+                    run('tar', '--zstd' if archive_kind == 'arch' else '-z', '-xf', str(archive), '-C', str(work), member)
+                    shutil.copyfile(work / member, bindir / binary)
+                    (bindir / binary).chmod(0o700)
+                expected = b'2.102.1' if label == 'gh' else b'1.3.2'
+                if expected not in run(str(bindir / label), '--version'):
+                    raise ValueError('mirror tool version mismatch')
+            try:
+                stage_archive(kind)
+            except (subprocess.SubprocessError, ValueError, OSError):
+                if kind != 'arch': raise
+                print(f'Domestic {label} binary incompatible; using official same-version source.')
+                fetch(official[0], archive, official[1])
+                stage_archive('official')
         policy = root / 'etc/containers/policy.json'
         if not policy.is_file():
             raise ValueError('pinned containers policy missing')
@@ -148,9 +171,7 @@ def install(destination):
             if flag not in flags: raise ValueError('GitHub CLI attestation flag missing')
         if b'1.3.2' not in run(str(bindir / 'age'), '--version'):
             raise ValueError('unexpected age version')
-        # The parent is owner-only and a pre-existing destination is refused.
-        if os.path.lexists(destination): raise FileExistsError('destination appeared')
-        os.rename(work, destination)
+        rename_noreplace(work, destination)
 
 
 if __name__ == '__main__':

@@ -23,7 +23,12 @@ ORIGIN = 'git@github.com:Hyperbola-QAQ/Shirone-Strapi.git'
 
 
 def git(checkout, *args):
-    env = dict(os.environ, GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes')
+    mode = os.environ.get('SHIRONE_CONTROLLER_LOCAL', '0')
+    if mode not in ('0', '1'):
+        raise ValueError('invalid local controller mode')
+    identity = (' -i /home/hyperbola/.local/state/shirone-release/identity/deploy-key'
+                ' -o IdentitiesOnly=yes') if mode == '1' else ''
+    env = dict(os.environ, GIT_SSH_COMMAND='ssh' + identity + ' -o BatchMode=yes -o StrictHostKeyChecking=yes')
     return subprocess.run(['git', *args], cwd=checkout, check=True, text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60, env=env).stdout.strip()
 
@@ -77,6 +82,8 @@ def retry_download_if_safe(checkout, state, head, run_id):
 
 
 def poll(checkout, state, key, recipient_file, previous_record):
+    # Validate local host/user/address before any local-mode network request.
+    controller.adapter_module.local_target()
     checkout, state = Path(checkout), Path(state)
     info = state.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:

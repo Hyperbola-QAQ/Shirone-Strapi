@@ -51,6 +51,17 @@ class PollTests(unittest.TestCase):
             self.assertFalse((self.state / 'poll-hold').exists())
             self.assertIn(('merge', '--ff-only', 'FETCH_HEAD'), self.commands)
 
+    def test_local_git_uses_only_dedicated_key_and_strict_host_checking(self):
+        with patch.dict(poll.os.environ, {'SHIRONE_CONTROLLER_LOCAL': '1',
+                                          'GIT_SSH_COMMAND': 'ssh -o StrictHostKeyChecking=no'}), \
+             patch.object(poll.subprocess, 'run', return_value=SimpleNamespace(stdout='')) as run:
+            poll.git('/isolated/repo', 'fetch', 'origin')
+            ssh = run.call_args.kwargs['env']['GIT_SSH_COMMAND']
+            self.assertIn('/home/hyperbola/.local/state/shirone-release/identity/deploy-key', ssh)
+            self.assertIn('IdentitiesOnly=yes', ssh)
+            self.assertIn('StrictHostKeyChecking=yes', ssh)
+            self.assertNotIn('StrictHostKeyChecking=no', ssh)
+
     def test_interruption_holds_subsequent_attempt(self):
         with patch.object(poll, 'git', side_effect=self.git), \
              patch.object(poll.controller.gate, 'gh', return_value=self.response()), \

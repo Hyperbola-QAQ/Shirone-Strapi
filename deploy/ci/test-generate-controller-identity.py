@@ -1,4 +1,5 @@
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import tempfile
@@ -46,6 +47,25 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.chmod(tmp, 0o755)
             with self.assertRaises(ValueError): identity.generate(tmp, '/isolated/age-keygen')
+
+    def test_atomic_identity_publish_never_replaces_a_racing_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            left, right, target = (root / name for name in ('left', 'right', 'identity'))
+            for directory in (left, right):
+                directory.mkdir()
+                (directory / 'marker').write_text(directory.name)
+            def publish(source):
+                try:
+                    identity.rename_noreplace(source, target)
+                    return True
+                except FileExistsError:
+                    return False
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outcomes = list(pool.map(publish, (left, right)))
+            self.assertEqual(sorted(outcomes), [False, True])
+            self.assertIn((target / 'marker').read_text(), ('left', 'right'))
+            self.assertEqual(sum(path.exists() for path in (left, right)), 1)
 
 
 if __name__ == '__main__':
