@@ -47,6 +47,8 @@ class Adapter:
         self.previous_record = Path(previous_record)
         self.head = None
         self.pending_commit = None
+        self.recovery_checkout = None
+        self.preserved_checkout = None
 
     def _git(self, *args):
         return gitops.git(self.checkout, *args)
@@ -230,7 +232,8 @@ class Adapter:
             return
         component, previous, old, target = self.pending_commit
         if self._git('status', '--porcelain', '--untracked-files=all'):
-            raise ValueError('pending commit left a dirty checkout')
+            self._recover_dirty_pending(component, previous, old, target)
+            return
         if self._git('symbolic-ref', '--quiet', '--short', 'HEAD') != 'main':
             raise ValueError('pending commit checkout is not main')
         current = self._git('rev-parse', 'HEAD')
@@ -291,6 +294,53 @@ class Adapter:
         self.head = current
         self.pending_commit = None
 
+    def _recover_dirty_pending(self, component, previous, old, target):
+        """Fence and recover from an isolated clone without touching dirty files."""
+        if (self._git('symbolic-ref', '--quiet', '--short', 'HEAD') != 'main' or
+                self._git('rev-parse', 'HEAD') != previous or gitops.remote_head(self.checkout) != previous):
+            raise ValueError('dirty pending checkout or remote changed')
+        relative = f'deploy/k8s/{component}.yaml'
+        before = subprocess.run(['git', '-C', str(self.checkout), 'show', f'{previous}:{relative}'],
+                                check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        pattern = re.compile(rb'^([ \t]*image:[ \t]*)([^\s]+)([ \t]*)$', re.MULTILINE)
+        matches = list(pattern.finditer(before))
+        if len(matches) != 1 or matches[0].group(2) != old.encode():
+            raise ValueError('dirty pending source image differs')
+        # Nothing in the original index or working tree is modified, even if
+        # it contains unrelated user edits or partially written files. The
+        # clean clone below is created from the validated remote parent only.
+        tree = self._git('rev-parse', f'{previous}^{{tree}}')
+        fence = self._git('commit-tree', tree, '-p', previous, '-m', 'ci: fence dirty release checkout')
+        if not re.fullmatch(r'[0-9a-f]{40}', fence):
+            raise ValueError('invalid dirty checkout fence')
+        try:
+            self._git('push', f'--force-with-lease=refs/heads/main:{previous}',
+                      'origin', f'{fence}:refs/heads/main')
+        except (subprocess.CalledProcessError, TimeoutError):
+            pass
+        if gitops.remote_head(self.checkout) != fence:
+            raise ValueError('dirty checkout fence outcome is uncertain')
+        origin = self._git('remote', 'get-url', 'origin')
+        name, email = self._git('config', 'user.name'), self._git('config', 'user.email')
+        self.recovery_checkout = tempfile.TemporaryDirectory(prefix='shirone-release-recovery-')
+        clone = Path(self.recovery_checkout.name) / 'checkout'
+        try:
+            subprocess.run(['git', 'clone', '--no-local', '--single-branch', '--branch', 'main', '--', origin, str(clone)],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+            gitops.git(clone, 'config', 'user.name', name)
+            gitops.git(clone, 'config', 'user.email', email)
+            if (gitops.git(clone, 'rev-parse', 'HEAD') != fence or gitops.remote_head(clone) != fence or
+                    gitops.git(clone, 'status', '--porcelain', '--untracked-files=all')):
+                raise ValueError('recovery clone differs from fenced remote')
+        except Exception:
+            self.recovery_checkout.cleanup()
+            self.recovery_checkout = None
+            raise
+        self.preserved_checkout = self.checkout
+        self.checkout = clone
+        self.head = fence
+        self.pending_commit = None
+
     def restore(self, admission, snapshot):
         self._reconcile_pending_commit()
         for component in ('ssr', 'cms'):
@@ -306,7 +356,7 @@ class Adapter:
             elif images != [old['image']]:
                 raise ValueError('unknown manifest state; manual reconciliation required')
             if live['image'] == target and target != old['image']:
-                command('bash', str(HERE / 'promote-reviewed.sh'), component, self.head, old['uid'],
+                command('bash', str(self.checkout / 'deploy/ci/promote-reviewed.sh'), component, self.head, old['uid'],
                         target, old['image'], '--apply', cwd=self.checkout)
 
     def verify_restored(self, admission, snapshot):
@@ -362,3 +412,7 @@ class Adapter:
         # Snapshot retains the old source even if finalize had succeeded before
         # a later error, avoiding incorrectly recording the new build on rollback.
         self._write_record(snapshot['previous_source'], snapshot['components'], snapshot['search_probe'])
+        if self.recovery_checkout is not None:
+            self.recovery_checkout.cleanup()
+            self.recovery_checkout = None
+            self.checkout = self.preserved_checkout

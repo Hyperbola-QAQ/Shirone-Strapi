@@ -102,6 +102,37 @@ class RealGitAdapterTests(unittest.TestCase):
         self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
         self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
 
+    def test_precommit_hook_failure_restores_live_and_preserves_all_local_changes(self):
+        hook = self.f.repo / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nif git diff --cached --name-only | grep -qx deploy/k8s/ssr.yaml; then\n'
+                        '  printf "\\n# preserve concurrent edit\\n" >> deploy/k8s/ssr.yaml\n  exit 1\nfi\nexit 0\n')
+        hook.chmod(0o755)
+        unrelated = self.f.repo / 'user-note.txt'
+        real_commit = mod.gitops.commit_manifest
+        def add_user_change_before_failure(repo, component, expected, old, new):
+            if component == 'ssr' and new.endswith(self.targets['ssr']):
+                # This appears after the clean-worktree precondition, as a
+                # concurrent user edit; the recovery clone must preserve it.
+                def commit_hook(*args, **kwargs):
+                    unrelated.write_text('preserve user work\n')
+                    return real_git(*args, **kwargs)
+                real_git = mod.gitops.git
+                def invoke(repo, *args):
+                    if args[:1] == ('commit',): return commit_hook(repo, *args)
+                    return real_git(repo, *args)
+                with patch.object(mod.gitops, 'git', side_effect=invoke):
+                    return real_commit(repo, component, expected, old, new)
+            return real_commit(repo, component, expected, old, new)
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=add_user_change_before_failure):
+            with self.assertRaisesRegex(RuntimeError, 'restored and verified'):
+                self.run_transaction()
+        self.assertEqual(self.live, self.original)
+        self.assertEqual(self.calls, ['promote-cms', 'restore-cms'])
+        self.assertEqual(unrelated.read_text(), 'preserve user work\n')
+        self.assertIn('# preserve concurrent edit', self.f.ssr.read_text())
+        self.assertIn('deploy/k8s/ssr.yaml', self.f.git('status', '--porcelain'))
+        self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
+
     def test_unpushed_pending_commit_is_fenced_without_publishing_it(self):
         real_commit = mod.gitops.commit_manifest
         def lose_push(repo, component, expected, old, new):

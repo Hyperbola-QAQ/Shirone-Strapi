@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import subprocess
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -60,6 +62,24 @@ class GitReleaseTests(unittest.TestCase):
         with patch.object(release, 'git', side_effect=race), self.assertRaises(subprocess.CalledProcessError):
             self.run_commit()
         self.assertEqual(release.remote_head(self.f.repo), self.f.source)
+
+    def test_two_real_concurrent_pushes_cannot_both_win_same_lease(self):
+        parent = self.f.deployment
+        tree = self.f.git('rev-parse', parent + '^{tree}')
+        contenders = [self.f.git('commit-tree', tree, '-p', parent, '-m', msg)
+                      for msg in ('candidate', 'recovery fence')]
+        self.assertNotEqual(*contenders)
+        barrier = threading.Barrier(2)
+        def push(commit):
+            barrier.wait(timeout=10)
+            return subprocess.run(['git', '-C', str(self.f.repo), 'push',
+                                   f'--force-with-lease=refs/heads/main:{parent}',
+                                   'origin', f'{commit}:refs/heads/main'],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20).returncode
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(push, contenders))
+        self.assertEqual(sum(code == 0 for code in results), 1)
+        self.assertEqual(release.remote_head(self.f.repo), contenders[results.index(0)])
 
     def test_commit_hook_cannot_add_hidden_manifest_changes(self):
         hook = self.f.repo / '.git/hooks/pre-commit'

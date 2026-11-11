@@ -68,7 +68,10 @@ def execute(adapter, directory, run_id, source):
                 adapter.restore(admission, snapshot)
                 adapter.verify_restored(admission, snapshot)
                 adapter.restored(admission, snapshot)
-                record(lock, run_id, 'restored')
+                preserved = getattr(adapter, 'preserved_checkout', None) is not None
+                record(lock, run_id, 'restored', {'original_checkout_preserved': preserved})
             except Exception as restore_error:
                 raise RuntimeError('Release failed; restoration is unverified and requires reconciliation') from restore_error
+            if preserved:
+                raise RuntimeError('Release failed; previous state restored and verified; original dirty checkout preserved for review')
             raise RuntimeError('Release failed; previous state was restored and verified')
