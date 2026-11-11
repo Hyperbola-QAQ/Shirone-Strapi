@@ -23,6 +23,8 @@ class LockTests(unittest.TestCase):
             with release_lock.ReleaseLock(directory) as lock:
                 with self.assertRaises(FileExistsError):
                     lock.reserve(42, 'a' * 40)
+                with self.assertRaises(FileExistsError):
+                    lock.reserve(44, 'a' * 40)
                 lock.reserve(43, 'b' * 40)
 
     def test_unprotected_directory_and_symlink_lock_fail_closed(self):

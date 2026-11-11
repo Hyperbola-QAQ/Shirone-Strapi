@@ -43,19 +43,22 @@ class ReleaseLock:
         if self.lock is None or type(run_id) is not int or run_id < 1 or not isinstance(source, str) or not SHA.fullmatch(source):
             raise ValueError('invalid reservation')
         payload = json.dumps({'schema': 1, 'run_id': run_id, 'source': source}, sort_keys=True).encode() + b'\n'
-        name = f'run-{run_id}.json'
-        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                     0o600, dir_fd=self.directory)
-        try:
-            with os.fdopen(fd, 'wb', closefd=True) as file:
-                file.write(payload)
-                file.flush()
-                os.fsync(file.fileno())
-            os.fsync(self.directory)
-        except BaseException:
-            # A possibly incomplete receipt intentionally remains: the
-            # operator must reconcile it instead of permitting a blind replay.
-            raise
+        # Block either a repeated run ID or a new run for the same source.
+        # The lock serializes the two creates; a crash between them leaves the
+        # first reservation in place and therefore still fails closed.
+        for name in (f'run-{run_id}.json', f'source-{source}.json'):
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=self.directory)
+            try:
+                with os.fdopen(fd, 'wb', closefd=True) as file:
+                    file.write(payload)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.fsync(self.directory)
+            except BaseException:
+                # A possibly incomplete receipt intentionally remains: the
+                # operator must reconcile it instead of permitting a blind replay.
+                raise
 
     def __exit__(self, *_):
         if self.lock is not None:

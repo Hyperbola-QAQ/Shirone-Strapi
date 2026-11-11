@@ -32,7 +32,7 @@ be protected; `main` currently has no GitHub branch protection, so selecting a
 source SHA from GitHub alone is not independent approval.
 
 `automatic-release-lock.py` supplies a separate controller primitive: a
-non-blocking exclusive host lock and durable, write-once run reservations.
+non-blocking exclusive host lock and durable, write-once run and source reservations.
 Reservations survive process failure and reject blind replay; an operator must
 reconcile interrupted attempts. It is not connected to the gate or any service,
 does not track deployment phases or restore previous images, and has only
