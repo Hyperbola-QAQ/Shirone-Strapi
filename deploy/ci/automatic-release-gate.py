@@ -30,15 +30,15 @@ def gh(*args):
     return json.loads(result.stdout)
 
 
-def admit(policy, run_id, signed_metadata, ciphertext_digest, recipient):
+def admit(policy, run_id, artifact_id, signed_metadata, ciphertext_digest, recipient):
     expected = {'source', 'signer', 'workflow_id'}
     if not isinstance(policy, dict) or set(policy) != expected:
         raise ValueError('invalid policy')
     source, signer, workflow_id = policy['source'], policy['signer'], policy['workflow_id']
     if not all(isinstance(x, str) and SHA.fullmatch(x) for x in (source, signer)):
         raise ValueError('unapproved source or signer')
-    if type(workflow_id) is not int or workflow_id < 1 or type(run_id) is not int or run_id < 1:
-        raise ValueError('invalid workflow or run')
+    if any(type(x) is not int or x < 1 for x in (workflow_id, run_id, artifact_id)):
+        raise ValueError('invalid workflow, run or artifact')
     if not DIGEST.fullmatch(ciphertext_digest) or not DIGEST.fullmatch(recipient):
         raise ValueError('invalid digest')
     run = gh(f'repos/{REPO}/actions/runs/{run_id}')
@@ -46,9 +46,17 @@ def admit(policy, run_id, signed_metadata, ciphertext_digest, recipient):
                     'head_branch': 'main', 'status': 'completed', 'conclusion': 'success'}
     if any(run.get(k) != v for k, v in expected_run.items()) or run.get('event') not in ('push', 'workflow_dispatch'):
         raise ValueError('run differs from authorized release')
+    attempt = run.get('run_attempt')
+    if type(attempt) is not int or attempt < 1:
+        raise ValueError('invalid run attempt')
     workflow = gh(f'repos/{REPO}/actions/workflows/shirone-release.yml')
     if workflow.get('id') != workflow_id or workflow.get('path') != '.github/workflows/shirone-release.yml':
         raise ValueError('unexpected workflow identity')
+    artifact = gh(f'repos/{REPO}/actions/artifacts/{artifact_id}')
+    if (artifact.get('id') != artifact_id or artifact.get('expired') is not False or
+            artifact.get('name') != f'shirone-encrypted-release-{run_id}-{attempt}' or
+            not isinstance(artifact.get('workflow_run'), dict) or artifact['workflow_run'].get('id') != run_id):
+        raise ValueError('artifact is not the authorized run output')
     remote = subprocess.run(['git', 'ls-remote', '--exit-code', 'origin', 'refs/heads/main'], check=True,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.split()
     if remote != [source, 'refs/heads/main']:
@@ -62,6 +70,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--policy', required=True, type=Path)
     parser.add_argument('--run-id', required=True, type=int)
+    parser.add_argument('--artifact-id', required=True, type=int)
     parser.add_argument('--metadata', required=True, type=Path)
     parser.add_argument('--ciphertext-digest', required=True)
     parser.add_argument('--recipient-fingerprint', required=True)
@@ -81,7 +90,7 @@ def main():
         finally:
             os.close(fd)
         policy = json.loads(raw, object_pairs_hook=metadata.unique)
-        result = admit(policy, args.run_id, args.metadata, args.ciphertext_digest, args.recipient_fingerprint)
+        result = admit(policy, args.run_id, args.artifact_id, args.metadata, args.ciphertext_digest, args.recipient_fingerprint)
         print(json.dumps(result, sort_keys=True))
         return 0
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, json.JSONDecodeError):

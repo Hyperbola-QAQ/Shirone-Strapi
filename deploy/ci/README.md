@@ -22,8 +22,9 @@ installed and does not enable the old workflows.
 `automatic-release-gate.py` is an isolated admission building block, not a
 deployment service. It requires a locally trusted, owner-only policy containing
 an independently approved source SHA, signer SHA and workflow ID; checks the
-GitHub run and workflow identity and exact current remote main; and verifies the
-signed metadata against that policy. It does not download artifacts, verify the
+GitHub run, workflow and exact run-attempt artifact identity, and exact current
+remote main; and verifies the signed metadata against that policy. It does not
+download artifacts, verify the
 ciphertext file, lock against concurrent runs, record replay state, change Git,
 deploy, or roll back. Those must be implemented and validated by a controller
 before unattended use. The controller's host and policy parent directories must

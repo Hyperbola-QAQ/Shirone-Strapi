@@ -18,17 +18,18 @@ class AdmissionTests(unittest.TestCase):
         self.signer = 'b' * 40
         self.policy = {'source': self.source, 'signer': self.signer, 'workflow_id': 123}
         self.run = {'id': 55, 'workflow_id': 123, 'head_sha': self.source,
-                    'head_branch': 'main', 'status': 'completed', 'conclusion': 'success', 'event': 'push'}
+                    'head_branch': 'main', 'status': 'completed', 'conclusion': 'success', 'event': 'push', 'run_attempt': 1}
         self.workflow = {'id': 123, 'path': '.github/workflows/shirone-release.yml'}
+        self.artifact = {'id': 66, 'expired': False, 'name': 'shirone-encrypted-release-55-1', 'workflow_run': {'id': 55}}
         self.digest = 'sha256:' + 'c' * 64
         self.signed = {'manifests': {'cms': self.digest}}
 
-    def execute(self, policy=None, run=None, workflow=None, remote=None):
-        responses = [run or self.run, workflow or self.workflow]
+    def execute(self, policy=None, run=None, workflow=None, artifact=None, remote=None):
+        responses = [run or self.run, workflow or self.workflow, artifact or self.artifact]
         with patch.object(gate, 'gh', side_effect=responses), \
              patch.object(gate.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, remote or self.source + '\trefs/heads/main\n')), \
              patch.object(gate.metadata, 'verify', return_value=self.signed) as verify:
-            result = gate.admit(policy or self.policy, 55, Path('/test/metadata'), self.digest, self.digest)
+            result = gate.admit(policy or self.policy, 55, 66, Path('/test/metadata'), self.digest, self.digest)
             verify.assert_called_once_with(Path('/test/metadata'), self.source, self.signer, self.digest, self.digest)
             return result
 
@@ -48,16 +49,21 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.execute(remote='d' * 40 + '\trefs/heads/main\n')
 
+    def test_expired_replaced_or_other_run_artifact_is_rejected(self):
+        for name, value in [('id', 67), ('expired', True), ('name', 'wrong'), ('workflow_run', {'id': 56})]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.execute(artifact=dict(self.artifact, **{name: value}))
+
     def test_invalid_policy_is_rejected_before_network(self):
         with patch.object(gate, 'gh') as gh, self.assertRaises(ValueError):
-            gate.admit(dict(self.policy, signer='main'), 55, Path('/test'), self.digest, self.digest)
+            gate.admit(dict(self.policy, signer='main'), 55, 66, Path('/test'), self.digest, self.digest)
         gh.assert_not_called()
 
     def test_failed_attestation_never_admits(self):
-        with patch.object(gate, 'gh', side_effect=[self.run, self.workflow]), \
+        with patch.object(gate, 'gh', side_effect=[self.run, self.workflow, self.artifact]), \
              patch.object(gate.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, self.source + '\trefs/heads/main\n')), \
              patch.object(gate.metadata, 'verify', side_effect=ValueError('bad signature')), self.assertRaises(ValueError):
-            gate.admit(self.policy, 55, Path('/test'), self.digest, self.digest)
+            gate.admit(self.policy, 55, 66, Path('/test'), self.digest, self.digest)
 
 
 if __name__ == '__main__':
