@@ -46,8 +46,17 @@ side effects; and requests guarded restoration and verification after an
 exception. A process interruption keeps its reservation and requires live
 state reconciliation rather than an automatic retry. Its adapter is only a
 test double today: actual Git compare-and-swap, signed artifact download,
-Ansible deployment, schema compatibility and restoration are not wired in.
-Do not schedule or treat it as production automation.
+Ansible deployment, schema compatibility and restoration require further
+validation. `automatic-release-adapter.py` connects the existing signed
+promotion and guarded Ansible rollback entrypoints to this core, with an
+owner-only previous-release record bound to live images and UIDs. A CMS or
+dependency difference stops before deployment. Its tests exercise real Git
+commits and a simulated cluster, including an apply whose response is lost;
+they do not prove actual registry, Ansible, database, publication or search
+recovery. The current preview checks remote main only, the artifact files are
+not yet cryptographically bound to the selected run's downloaded artifact,
+and no node-pull or Ansible-admission preflight is performed. Do not schedule
+or treat it as production automation.
 
 `automatic-release-git.py` implements the actual manifest-only Git step for an
 isolated controller checkout: it requires clean, exact local and remote main,
