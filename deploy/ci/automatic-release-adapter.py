@@ -46,6 +46,7 @@ class Adapter:
         self.recipient = recipient
         self.previous_record = Path(previous_record)
         self.head = None
+        self.pending_commit = None
 
     def _git(self, *args):
         return gitops.git(self.checkout, *args)
@@ -184,7 +185,9 @@ class Adapter:
         target = f"192.168.86.100:30500/shirone/{component}@{admission['manifests'][component]}"
         if old == target:
             return
+        self.pending_commit = (component, self.head, old, target)
         self.head = gitops.commit_manifest(self.checkout, component, self.head, old, target)
+        self.pending_commit = None
         # Existing tool verifies both attestations, decrypts and validates OCI,
         # copies by digest, then calls the guarded Ansible entrypoint.
         original = os.getcwd()
@@ -216,7 +219,49 @@ class Adapter:
                 isinstance(hit, dict) and hit.get('url') == probe['url'] for hit in result['hits']):
             raise ValueError('published search probe is missing')
 
+    def _reconcile_pending_commit(self):
+        """Recognize an exact committed and pushed change after a lost reply.
+
+        An unpushed or otherwise ambiguous commit is deliberately left intact
+        for operator reconciliation. Never reset or retry an uncertain push.
+        """
+        if self.pending_commit is None:
+            return
+        component, previous, old, target = self.pending_commit
+        if self._git('status', '--porcelain', '--untracked-files=all'):
+            raise ValueError('pending commit left a dirty checkout')
+        if self._git('symbolic-ref', '--quiet', '--short', 'HEAD') != 'main':
+            raise ValueError('pending commit checkout is not main')
+        current = self._git('rev-parse', 'HEAD')
+        remote = gitops.remote_head(self.checkout)
+        if current == previous and remote == previous:
+            self.head = previous
+            self.pending_commit = None
+            return
+        if remote != current:
+            raise ValueError('pending commit remote state is uncertain')
+        parents = self._git('rev-list', '--parents', '-n', '1', current).split()
+        relative = f'deploy/k8s/{component}.yaml'
+        changed = self._git('diff-tree', '--no-commit-id', '--name-only', '-r', previous, current).splitlines()
+        if parents != [current, previous] or changed != [relative]:
+            raise ValueError('pending commit is not the expected direct child')
+        def blob(revision):
+            return subprocess.run(['git', '-C', str(self.checkout), 'show', f'{revision}:{relative}'],
+                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        before, after = blob(previous), blob(current)
+        pattern = re.compile(rb'^([ \t]*image:[ \t]*)([^\s]+)([ \t]*)$', re.MULTILINE)
+        matches = list(pattern.finditer(before))
+        if len(matches) != 1 or matches[0].group(2) != old.encode():
+            raise ValueError('pending commit source image differs')
+        found = matches[0]
+        expected = before[:found.start(2)] + target.encode() + before[found.end(2):]
+        if after != expected or (self.checkout / relative).read_bytes() != expected:
+            raise ValueError('pending commit includes unexpected changes')
+        self.head = current
+        self.pending_commit = None
+
     def restore(self, admission, snapshot):
+        self._reconcile_pending_commit()
         for component in ('ssr', 'cms'):
             old = snapshot['components'][component]
             target = f"192.168.86.100:30500/shirone/{component}@{admission['manifests'][component]}"

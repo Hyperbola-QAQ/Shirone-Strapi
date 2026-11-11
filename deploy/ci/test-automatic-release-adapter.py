@@ -87,6 +87,54 @@ class RealGitAdapterTests(unittest.TestCase):
         self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
         self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
 
+    def test_lost_push_response_is_reconciled_and_both_components_restored(self):
+        real_commit = mod.gitops.commit_manifest
+        def commit_then_lose_reply(repo, component, expected, old, new):
+            result = real_commit(repo, component, expected, old, new)
+            if component == 'ssr' and new.endswith(self.targets['ssr']):
+                raise TimeoutError('push succeeded but reply was lost')
+            return result
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=commit_then_lose_reply):
+            with self.assertRaisesRegex(RuntimeError, 'restored and verified'):
+                self.run_transaction()
+        self.assertEqual(self.live, self.original)
+        self.assertEqual(self.calls, ['promote-cms', 'restore-cms'])
+        self.assertEqual(mod.gitops.remote_head(self.f.repo), self.adapter.head)
+        self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
+
+    def test_unpushed_pending_commit_is_left_for_manual_reconciliation(self):
+        real_commit = mod.gitops.commit_manifest
+        def lose_push(repo, component, expected, old, new):
+            if component != 'cms':
+                return real_commit(repo, component, expected, old, new)
+            path = self.f.repo / 'deploy/k8s/cms.yaml'
+            path.write_text(path.read_text().replace(old, new))
+            self.f.git('add', 'deploy/k8s/cms.yaml')
+            self.f.git('commit', '-qm', 'simulated failed push')
+            raise TimeoutError('push status uncertain')
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=lose_push):
+            with self.assertRaisesRegex(RuntimeError, 'restoration is unverified'):
+                self.run_transaction()
+        self.assertNotEqual(self.f.git('rev-parse', 'HEAD'), self.source)
+        self.assertEqual(mod.gitops.remote_head(self.f.repo), self.source)
+        self.assertEqual(self.live, self.original)
+
+    def test_tampered_pushed_manifest_is_not_adopted(self):
+        real_commit = mod.gitops.commit_manifest
+        def tamper_after_push(repo, component, expected, old, new):
+            real_commit(repo, component, expected, old, new)
+            path = self.f.repo / f'deploy/k8s/{component}.yaml'
+            path.write_text(path.read_text() + '\n# unrelated change\n')
+            self.f.git('add', f'deploy/k8s/{component}.yaml')
+            self.f.git('commit', '--amend', '--no-edit', '-q')
+            self.f.git('push', '--force', '-q', 'origin', 'main')
+            raise TimeoutError('push reply lost with concurrent modification')
+        with patch.object(mod.gitops, 'commit_manifest', side_effect=tamper_after_push):
+            with self.assertRaisesRegex(RuntimeError, 'restoration is unverified'):
+                self.run_transaction()
+        self.assertEqual(self.live, self.original)
+        self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
+
     def test_unbound_previous_record_stops_before_git_changes(self):
         data = json.loads(self.record.read_text())
         data['components']['cms']['image'] = fixture.PREFIX + fixture.OLD
