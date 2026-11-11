@@ -39,6 +39,16 @@ does not track deployment phases or restore previous images, and has only
 isolated tests. A real controller must hold the lock from admission through
 cleanup and place the state directory on durable private storage.
 
+`automatic-release-transaction.py` is an isolated transaction core, not an
+installed controller. It holds that lock through admission, preview, ordered
+CMS/SSR promotion and verification; writes durable intent receipts before
+side effects; and requests guarded restoration and verification after an
+exception. A process interruption keeps its reservation and requires live
+state reconciliation rather than an automatic retry. Its adapter is only a
+test double today: actual Git compare-and-swap, signed artifact download,
+Ansible deployment, schema compatibility and restoration are not wired in.
+Do not schedule or treat it as production automation.
+
 Except for the installed workflow described above, files in this directory
 are not active GitHub Actions workflows. The legacy
 `CI` and `Deploy Mizuki to Kubernetes` workflows remain disabled; do not install
