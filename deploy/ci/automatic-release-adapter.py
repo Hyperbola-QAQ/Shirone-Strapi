@@ -76,7 +76,7 @@ class Adapter:
         ciphertext_digest = 'sha256:' + digest.hexdigest()
         recipient_fingerprint = promotion.crypto.recipient_fingerprint(self.recipient)
         signed = gate.admit(self.policy, run_id, self.artifact_id, self.metadata,
-                            ciphertext_digest, recipient_fingerprint)
+                            ciphertext_digest, recipient_fingerprint, checkout=self.checkout)
         return {'source': source, 'signer': self.policy['signer'], 'ciphertext_digest': ciphertext_digest,
                 'manifests': signed['manifests']}
 
@@ -104,7 +104,6 @@ class Adapter:
         # change. CMS migrations need a separate reviewed recovery procedure.
         changed = self._git('diff', '--name-only', previous['source'], admission['source'], '--',
                             'cms', 'Dockerfile', 'package.json', 'pnpm-lock.yaml',
-                            '.github/workflows/shirone-release.yml',
                             'deploy/ci/build-tested-oci-candidate.sh',
                             'deploy/ci/build-encrypted-release-candidate.sh',
                             'deploy/ci/rebuild-hosted-bases-candidate.sh',
@@ -252,7 +251,12 @@ class Adapter:
                 os.unlink(name)
 
     def finalize(self, admission, snapshot):
-        self._write_record(admission['source'], {name: self._live(name) for name in ('cms', 'ssr')})
+        components = {name: self._live(name) for name in ('cms', 'ssr')}
+        for name, current in components.items():
+            expected = f"192.168.86.100:30500/shirone/{name}@{admission['manifests'][name]}"
+            if current != {'uid': snapshot['components'][name]['uid'], 'image': expected}:
+                raise ValueError('deployment changed before release record update')
+        self._write_record(admission['source'], components)
 
     def restored(self, admission, snapshot):
         # Snapshot retains the old source even if finalize had succeeded before

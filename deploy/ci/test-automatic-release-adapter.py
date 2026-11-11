@@ -124,6 +124,14 @@ class RealGitAdapterTests(unittest.TestCase):
             self.run_transaction()
         self.assertEqual(self.live, self.original)
 
+    def test_external_change_before_record_update_is_not_certified(self):
+        def change_after_checks(admission, snapshot):
+            self.live['cms']['image'] = fixture.PREFIX + 'sha256:' + '9' * 64
+        self.adapter.verify_all = change_after_checks
+        with self.assertRaisesRegex(RuntimeError, 'restoration is unverified'):
+            self.run_transaction()
+        self.assertEqual(json.loads(self.record.read_text())['components'], self.original)
+
     def test_preview_uses_both_reviewed_playbooks_after_verified_envelope(self):
         destination = self.f.repo / 'deploy/ansible'
         destination.mkdir(parents=True)

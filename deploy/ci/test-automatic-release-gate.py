@@ -65,6 +65,13 @@ class AdmissionTests(unittest.TestCase):
              patch.object(gate.metadata, 'verify', side_effect=ValueError('bad signature')), self.assertRaises(ValueError):
             gate.admit(self.policy, 55, 66, Path('/test'), self.digest, self.digest)
 
+    def test_remote_main_is_checked_in_supplied_controller_checkout(self):
+        with patch.object(gate, 'gh', side_effect=[self.run, self.workflow, self.artifact]), \
+             patch.object(gate.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, self.source + '\trefs/heads/main\n')) as git, \
+             patch.object(gate.metadata, 'verify', return_value=self.signed):
+            gate.admit(self.policy, 55, 66, Path('/test'), self.digest, self.digest, checkout=Path('/isolated/repo'))
+        self.assertEqual(git.call_args.kwargs['cwd'], Path('/isolated/repo'))
+
 
 if __name__ == '__main__':
     unittest.main()

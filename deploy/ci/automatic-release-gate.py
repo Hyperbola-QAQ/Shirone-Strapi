@@ -30,7 +30,7 @@ def gh(*args):
     return json.loads(result.stdout)
 
 
-def admit(policy, run_id, artifact_id, signed_metadata, ciphertext_digest, recipient):
+def admit(policy, run_id, artifact_id, signed_metadata, ciphertext_digest, recipient, checkout=None):
     expected = {'source', 'signer', 'workflow_id'}
     if not isinstance(policy, dict) or set(policy) != expected:
         raise ValueError('invalid policy')
@@ -57,7 +57,7 @@ def admit(policy, run_id, artifact_id, signed_metadata, ciphertext_digest, recip
             artifact.get('name') != f'shirone-encrypted-release-{run_id}-{attempt}' or
             not isinstance(artifact.get('workflow_run'), dict) or artifact['workflow_run'].get('id') != run_id):
         raise ValueError('artifact is not the authorized run output')
-    remote = subprocess.run(['git', 'ls-remote', '--exit-code', 'origin', 'refs/heads/main'], check=True,
+    remote = subprocess.run(['git', 'ls-remote', '--exit-code', 'origin', 'refs/heads/main'], check=True, cwd=checkout,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.split()
     if remote != [source, 'refs/heads/main']:
         raise ValueError('remote main is not the approved source')
