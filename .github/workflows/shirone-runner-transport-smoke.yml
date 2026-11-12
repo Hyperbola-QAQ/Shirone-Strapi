@@ -1,0 +1,59 @@
+# One-time synthetic transport check. No production access or secrets are used.
+name: Shirone runner transport smoke
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  make_synthetic_artifact:
+    if: github.repository == 'Hyperbola-QAQ/Shirone-Strapi' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      digest: ${{ steps.make.outputs.digest }}
+    steps:
+      - name: Create synthetic fixture
+        id: make
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'shirone synthetic transport fixture\n' > "$RUNNER_TEMP/shirone-fixture.txt"
+          printf 'digest=%s\n' "$(sha256sum "$RUNNER_TEMP/shirone-fixture.txt" | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shirone-transport-smoke-${{ github.run_id }}
+          path: ${{ runner.temp }}/shirone-fixture.txt
+          retention-days: 1
+  verify_on_imini:
+    needs: make_synthetic_artifact
+    if: github.repository == 'Hyperbola-QAQ/Shirone-Strapi' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, shirone-smoke-imini]
+    timeout-minutes: 10
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: shirone-transport-smoke-${{ github.run_id }}
+          path: ${{ runner.temp }}/shirone-transport-smoke-${{ github.run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+      - name: Verify synthetic artifact
+        env:
+          EXPECTED_DIGEST: ${{ needs.make_synthetic_artifact.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          test "$(hostname)" = hyqaq-imini
+          printf '%s  %s\n' "$EXPECTED_DIGEST" "$RUNNER_TEMP/shirone-transport-smoke-$GITHUB_RUN_ID/shirone-fixture.txt" | sha256sum -c -
+      - name: Remove synthetic fixture
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/shirone-transport-smoke-$GITHUB_RUN_ID/shirone-fixture.txt"
+          if test -f "$file" && ! test -L "$file"; then rm -- "$file"; fi
+          directory="$RUNNER_TEMP/shirone-transport-smoke-$GITHUB_RUN_ID"
+          if test -d "$directory" && ! test -L "$directory"; then rmdir -- "$directory"; fi
