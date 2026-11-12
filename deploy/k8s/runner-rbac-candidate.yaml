@@ -1,0 +1,33 @@
+# Review candidate only. Do not apply before the runner identity and token
+# lifecycle are configured and the application has passed the release tests.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shirone-release-runner
+  namespace: mizuki
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shirone-release-runner
+  namespace: mizuki
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [shirone-cms, shirone-ssr]
+    verbs: [get, list, watch, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shirone-release-runner
+  namespace: mizuki
+subjects:
+  - kind: ServiceAccount
+    name: shirone-release-runner
+    namespace: mizuki
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: shirone-release-runner
