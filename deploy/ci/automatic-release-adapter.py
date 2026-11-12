@@ -37,13 +37,35 @@ def command(*args, cwd=None, env=None):
     return subprocess.run(args, cwd=cwd, env=env, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout
 
 
+def runner_mode():
+    mode = os.environ.get('SHIRONE_CONTROLLER_RUNNER', '0')
+    if mode not in ('0', '1'):
+        raise ValueError('invalid runner controller mode')
+    if mode == '1' and os.environ.get('SHIRONE_CONTROLLER_LOCAL') != '1':
+        raise ValueError('runner requires local controller mode')
+    return mode == '1'
+
+
+def controller_kubeconfig():
+    return ('/home/github-actions/.local/state/shirone-release/kubeconfig' if runner_mode()
+            else '/home/hyperbola/.kube/config')
+
+
+def controller_user():
+    return 'github-actions' if runner_mode() else 'hyperbola'
+
+
+def controller_ops():
+    return Path('/home/github-actions/.local/share/shirone-release/ansible') if runner_mode() else Path('/home/hyperbola/Work/ansible-debian-k8s')
+
+
 def local_target():
     mode = os.environ.get('SHIRONE_CONTROLLER_LOCAL', '0')
     if mode not in ('0', '1'):
         raise ValueError('invalid local controller mode')
     if mode == '0':
         return False
-    if socket.gethostname() != 'hyqaq-imini' or pwd.getpwuid(os.geteuid()).pw_name != 'hyperbola':
+    if socket.gethostname() != 'hyqaq-imini' or pwd.getpwuid(os.geteuid()).pw_name != controller_user():
         raise ValueError('local controller is not on the reviewed host')
     addresses = json.loads(command('/usr/bin/ip', '-j', 'address', 'show'))
     if not any(item.get('local') == '192.168.86.11' for interface in addresses
@@ -53,7 +75,7 @@ def local_target():
 
 
 def kubectl(*args):
-    target = ('kubectl', '--kubeconfig=/home/hyperbola/.kube/config', '-n', 'mizuki', *args)
+    target = ('kubectl', f'--kubeconfig={controller_kubeconfig()}', '-n', 'mizuki', *args)
     if local_target():
         return command(*target)
     return command('ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
@@ -161,9 +183,9 @@ class Adapter:
         # A pre-existing outage or withdrawn probe must stop the release
         # before any manifest push or production change.
         self.verify_all(admission, snapshot)
-        ops = Path('/home/hyperbola/Work/ansible-debian-k8s')
+        ops = controller_ops()
         inventory = json.loads(command('ansible-inventory', '-i', str(ops / 'inventory/hosts.yml'), '--host', 'hyqaq-imini'))
-        if inventory.get('ansible_host') != '192.168.86.11' or inventory.get('ansible_user') != 'hyperbola':
+        if inventory.get('ansible_host') != '192.168.86.11' or inventory.get('ansible_user') != controller_user():
             raise ValueError('Ansible inventory identity differs')
         with tempfile.TemporaryDirectory(prefix='shirone-release-preview-') as scratch_name:
             scratch = Path(scratch_name)
@@ -200,9 +222,9 @@ class Adapter:
                 for name in ('ANSIBLE_SSH_ARGS', 'ANSIBLE_SSH_COMMON_ARGS', 'ANSIBLE_SSH_EXTRA_ARGS', 'ANSIBLE_SSH_EXECUTABLE'):
                     environment.pop(name, None)
                 connection = ('-c', 'local') if local_target() else ()
-                command('ansible-playbook', '-i', '192.168.86.11,', '-u', 'hyperbola', *connection, str(isolated_playbook),
+                command('ansible-playbook', '-i', '192.168.86.11,', '-u', controller_user(), *connection, str(isolated_playbook),
                         '-e', '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}',
-                        '-e', 'shirone_preview_hosts=192.168.86.11',
+                        '-e', 'shirone_preview_hosts=192.168.86.11', '-e', f'shirone_kubeconfig={controller_kubeconfig()}',
                         '-e', f"shirone_{component}_uid={snapshot['components'][component]['uid']}",
                         '-e', f'shirone_previous_image={old}', cwd=scratch, env=environment)
 

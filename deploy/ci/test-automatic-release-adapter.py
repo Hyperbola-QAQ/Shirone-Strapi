@@ -56,6 +56,21 @@ class LocalTargetTests(unittest.TestCase):
             self.assertEqual(mod.kubectl('get', 'deployments'), 'ok')
             self.assertEqual(call.call_args.args[0], 'kubectl')
 
+    def test_runner_local_mode_requires_exact_identity_and_uses_scoped_kubeconfig(self):
+        addresses = '[{"addr_info":[{"local":"192.168.86.11"}]}]'
+        with patch.dict(mod.os.environ, {'SHIRONE_CONTROLLER_LOCAL': '1', 'SHIRONE_CONTROLLER_RUNNER': '1'}), \
+             patch.object(mod.socket, 'gethostname', return_value='hyqaq-imini'), \
+             patch.object(mod.pwd, 'getpwuid', return_value=SimpleNamespace(pw_name='github-actions')), \
+             patch.object(mod, 'command', side_effect=[addresses, 'ok']) as call:
+            self.assertEqual(mod.kubectl('get', 'deployment', 'shirone-cms'), 'ok')
+            self.assertEqual(call.call_args.args[1], '--kubeconfig=/home/github-actions/.local/state/shirone-release/kubeconfig')
+        with patch.dict(mod.os.environ, {'SHIRONE_CONTROLLER_LOCAL': '1', 'SHIRONE_CONTROLLER_RUNNER': '1'}), \
+             patch.object(mod.socket, 'gethostname', return_value='hyqaq-imini'), \
+             patch.object(mod.pwd, 'getpwuid', return_value=SimpleNamespace(pw_name='hyperbola')):
+            with self.assertRaises(ValueError): mod.local_target()
+        with patch.dict(mod.os.environ, {'SHIRONE_CONTROLLER_LOCAL': '0', 'SHIRONE_CONTROLLER_RUNNER': '1'}):
+            with self.assertRaises(ValueError): mod.controller_kubeconfig()
+
 
 class RealGitAdapterTests(unittest.TestCase):
     def setUp(self):

@@ -16,7 +16,7 @@
           - lookup('env', 'SHIRONE_WORKSPACE') | length > 0
           - shirone_cms_uid | length > 0
           - shirone_previous_image is match('^192\\.168\\.86\\.100:30500/shirone/cms@sha256:[0-9a-f]{64}$')
-          - shirone_kubeconfig == '/home/hyperbola/.kube/config'
+          - shirone_kubeconfig in ['/home/hyperbola/.kube/config', '/home/github-actions/.local/state/shirone-release/kubeconfig']
         quiet: true
     - name: Read live deployment without secrets
       ansible.builtin.command:
