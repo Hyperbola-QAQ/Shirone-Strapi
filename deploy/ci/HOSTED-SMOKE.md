@@ -55,3 +55,17 @@ available to the existing minimally scoped GitHub credential. At the time of
 inspection the active production CMS and SSR compressed layers alone totaled
 approximately 760 MB; GitHub Free includes 500 MB of Actions artifact storage.
 Do not assume a full-size upload will fit or be free.
+
+## imini runner artifact transport (2026-11-12)
+
+Manual run `43144583772` created a small synthetic fixture on a GitHub-hosted
+runner, then used the job's short-lived `GITHUB_TOKEN` with `actions: read` on
+the uniquely selected `hyqaq-imini-mizuki` self-hosted runner to download it.
+The actual runner name, file SHA-256 and cleanup step all verified successfully.
+The smoke workflow was disabled, its exact artifact `13910927640` deleted, and
+the temporary runner label removed afterward. Old Mizuki CI and deployment
+workflows remained disabled. No production credentials or Kubernetes access
+were used. This proves same-run synthetic artifact transport, not large
+artifact handling, signature verification on the runner, production deployment,
+or rollback. Full-size release artifact signing and verification were separately
+validated in later runs documented in the release and deployment notes.
