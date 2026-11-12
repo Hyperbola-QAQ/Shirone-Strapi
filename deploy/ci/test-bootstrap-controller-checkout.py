@@ -1,8 +1,10 @@
 import importlib.util
+import http.server
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -13,7 +15,7 @@ spec.loader.exec_module(bootstrap)
 
 class BootstrapTests(unittest.TestCase):
     def test_clone_commands_do_not_inherit_git_override_or_credentials(self):
-        injected = {'GIT_DIR': '/unexpected', 'GIT_CONFIG_COUNT': '1',
+        injected = {'GIT_DIR': '/unexpected', 'GIT_COMMON_DIR': '/unexpected', 'GIT_CONFIG_COUNT': '1',
                     'GIT_CONFIG_KEY_0': 'credential.helper', 'GIT_SSL_NO_VERIFY': 'true',
                     'GIT_ASKPASS': '/unexpected', 'GIT_TRACE': '/unexpected'}
         with patch.dict(os.environ, injected), \
@@ -67,6 +69,51 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 bootstrap.prepare(existing, head, 'Release Test', 'release@example.invalid')
             self.assertEqual((existing / 'keep').read_text(), 'keep')
+
+    def test_real_git_common_dir_injection_cannot_change_another_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote, head = self.setup_repo(root)
+            victim = root / 'victim'
+            subprocess.run(['git', 'init', str(victim)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(['git', '-C', str(victim), 'remote', 'add', 'origin', 'https://example.invalid/sentinel'],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            parent = root / 'private'
+            parent.mkdir(mode=0o700)
+            with patch.object(bootstrap, 'PUBLIC_URL', str(remote)), \
+                 patch.dict(os.environ, {'GIT_COMMON_DIR': str(victim / '.git')}):
+                bootstrap.prepare(parent / 'repo', head, 'Release Test', 'release@example.invalid')
+            origin = subprocess.run(['git', '-C', str(victim), 'remote', 'get-url', 'origin'],
+                                    check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.strip()
+            self.assertEqual(origin, 'https://example.invalid/sentinel')
+
+    def test_anonymous_clone_does_not_read_inherited_netrc(self):
+        seen = []
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get('Authorization'))
+                self.send_response(401)
+                self.send_header('WWW-Authenticate', 'Basic realm="fixture"')
+                self.end_headers()
+            def log_message(self, *args): pass
+        server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'; home.mkdir(mode=0o700)
+            netrc = home / '.netrc'
+            netrc.write_text('machine 127.0.0.1 login synthetic password synthetic\n')
+            netrc.chmod(0o600)
+            parent = Path(tmp) / 'private'; parent.mkdir(mode=0o700)
+            url = f'http://127.0.0.1:{server.server_port}/fixture.git'
+            with patch.object(bootstrap, 'PUBLIC_URL', url), \
+                 patch.dict(os.environ, {'HOME': str(home), 'NO_PROXY': '127.0.0.1'}):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    bootstrap.prepare(parent / 'repo', 'a' * 40, 'Test', 'test@example.invalid')
+        self.assertTrue(seen)
+        self.assertTrue(all(value is None for value in seen))
 
     def test_insecure_parent_and_invalid_identity_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

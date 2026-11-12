@@ -19,15 +19,20 @@ SHA = re.compile(r'^[0-9a-f]{40}$')
 
 
 def run(*args, cwd=None):
+    # Git exposes many redirection variables (including GIT_COMMON_DIR). An
+    # allow-by-exception list can silently redirect operations into another
+    # repository, so remove every inherited Git override before adding the few
+    # fixed safety settings below.
     env = {name: value for name, value in os.environ.items()
-           if not name.startswith(('GIT_CONFIG_', 'GIT_TRACE')) and name not in (
-               'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
-               'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_TEMPLATE_DIR', 'GIT_SSL_NO_VERIFY',
-               'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_EXEC_PATH')}
+           if not name.startswith('GIT_') and name not in ('SSH_ASKPASS', 'NETRC')}
     env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_TERMINAL_PROMPT='0',
                GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes')
-    return subprocess.run(args, cwd=cwd, env=env, check=True, timeout=180,
-                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.strip()
+    # libcurl may read HOME/.netrc even with credential helpers disabled. Give
+    # each subprocess an owner-only empty home rather than the user's home.
+    with tempfile.TemporaryDirectory(prefix='shirone-git-home-') as empty_home:
+        env.update(HOME=empty_home, XDG_CONFIG_HOME=empty_home, CURL_HOME=empty_home)
+        return subprocess.run(args, cwd=cwd, env=env, check=True, timeout=180,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.strip()
 
 
 def rename_noreplace(source, destination):
