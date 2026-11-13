@@ -90,7 +90,7 @@ def artifact_location(artifact_id):
     return location
 
 
-def fetch_range(url, start, end, total, path, retries=3):
+def fetch_range(url, start, end, total, path, retries=3, refresh_location=None):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     for attempt in range(retries):
         try:
@@ -114,6 +114,11 @@ def fetch_range(url, start, end, total, path, retries=3):
         except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, TransportUnavailable) as error:
             if path.exists():
                 path.unlink()
+            if isinstance(error, urllib.error.HTTPError) and error.code in (401, 403) and refresh_location is not None and attempt + 1 < retries:
+                # Signed storage URLs are short-lived. Reacquire an authorized
+                # URL without logging either the old or the replacement URL.
+                url = refresh_location()
+                continue
             if isinstance(error, urllib.error.HTTPError) and error.code not in (408, 429) and not 500 <= error.code <= 599:
                 raise ValueError('artifact range request rejected') from None
             if attempt + 1 == retries:
@@ -162,13 +167,14 @@ def download(run_id, attempt, parent, artifact_id):
             not isinstance(artifact.get('workflow_run'), dict) or artifact['workflow_run'].get('id') != run_id or
             type(size) is not int or not 0 < size <= MAX_ARCHIVE):
         raise ValueError('artifact does not match the selected run')
-    location = artifact_location(artifact_id)
     with tempfile.TemporaryDirectory(prefix='artifact-attempt-', dir=parent) as scratch:
         work = Path(scratch)
         spans = [(start, min(start + CHUNK, size) - 1) for start in range(0, size, CHUNK)]
         def part(item):
             index, (start, end) = item
-            fetch_range(location, start, end, size, work / f'part-{index:05d}')
+            location = artifact_location(artifact_id)
+            fetch_range(location, start, end, size, work / f'part-{index:05d}',
+                        refresh_location=lambda: artifact_location(artifact_id))
         with ThreadPoolExecutor(max_workers=WORKERS) as executor:
             list(executor.map(part, enumerate(spans)))
         archive = work / 'artifact.zip'

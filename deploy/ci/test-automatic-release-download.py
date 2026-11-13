@@ -30,7 +30,7 @@ class DownloadTests(unittest.TestCase):
                    'workflow_run': {'id': 123}, 'size_in_bytes': len(data)}
         if artifact:
             details.update(artifact)
-        def fetch(url, start, end, total, path):
+        def fetch(url, start, end, total, path, **kwargs):
             if broken:
                 raise ValueError('test range failure')
             self.assertEqual((url, total), ('https://example.invalid/private', len(data)))
@@ -101,6 +101,79 @@ class DownloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.run_fixture(directory, archive('../extra'))
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_expired_range_refreshes_once_then_succeeds(self):
+        class Response:
+            status = 206
+            headers = {'Content-Range': 'bytes 0-2/3'}
+            def __init__(self): self.data = io.BytesIO(b'abc')
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, amount): return self.data.read(amount)
+        class Opener:
+            calls = 0
+            def open(self, request, timeout):
+                self.calls += 1
+                if self.calls == 1:
+                    raise download.urllib.error.HTTPError(request.full_url, 403, '', {}, None)
+                self_test.assertEqual(request.full_url, 'https://example.invalid/refreshed')
+                return Response()
+        self_test = self
+        opener = Opener()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(download.urllib.request, 'build_opener', return_value=opener):
+            path = Path(directory) / 'part'
+            with patch.object(download.urllib.request, 'urlopen') as unused:
+                download.fetch_range('https://example.invalid/expired', 0, 2, 3, path,
+                                     refresh_location=lambda: 'https://example.invalid/refreshed')
+                unused.assert_not_called()
+            self.assertEqual(path.read_bytes(), b'abc')
+            self.assertEqual(opener.calls, 2)
+
+    def test_download_refreshes_expired_url_and_validates_whole_zip(self):
+        data = archive()
+        details = {'id': 44, 'name': 'shirone-encrypted-release-123-2', 'expired': False,
+                   'workflow_run': {'id': 123}, 'size_in_bytes': len(data)}
+        class Response:
+            status = 206
+            headers = {'Content-Range': f'bytes 0-{len(data)-1}/{len(data)}'}
+            def __init__(self): self.body = io.BytesIO(data)
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, n): return self.body.read(n)
+        class Opener:
+            calls = 0
+            def open(self, request, timeout):
+                self.calls += 1
+                if self.calls == 1:
+                    raise download.urllib.error.HTTPError(request.full_url, 403, '', {}, None)
+                self_test.assertEqual(request.full_url, 'https://example.invalid/new')
+                return Response()
+        self_test = self
+        opener = Opener()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(download, 'artifact_info', return_value=details), \
+             patch.object(download, 'artifact_location', side_effect=['https://example.invalid/old', 'https://example.invalid/new']) as locations, \
+             patch.object(download.urllib.request, 'build_opener', return_value=opener):
+            result = download.download(123, 2, directory, 44)
+            self.assertEqual((result / 'release.age').read_bytes(), b'encrypted fixture')
+            self.assertEqual(locations.call_count, 2)
+
+    def test_persistent_forbidden_stays_fail_closed(self):
+        class Opener:
+            calls = 0
+            def open(self, request, timeout):
+                self.calls += 1
+                raise download.urllib.error.HTTPError(request.full_url, 403, '', {}, None)
+        opener = Opener()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(download.urllib.request, 'build_opener', return_value=opener):
+            path = Path(directory) / 'part'
+            with self.assertRaisesRegex(ValueError, 'artifact range request rejected'):
+                download.fetch_range('https://example.invalid/expired', 0, 2, 3, path,
+                                     refresh_location=lambda: 'https://example.invalid/refreshed')
+            self.assertEqual(opener.calls, 3)
+            self.assertFalse(path.exists())
 
     def test_rejects_truncated_or_wrong_range_and_cleans_partial(self):
         class Response:
