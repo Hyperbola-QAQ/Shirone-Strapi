@@ -1,6 +1,6 @@
 # INACTIVE CANDIDATE: outside .github/workflows.
 # Main pushes build and sign; deployment remains separately guarded.
-name: Shirone encrypted release candidate
+name: Shirone encrypted release validation
 on:
   workflow_dispatch:
   push:

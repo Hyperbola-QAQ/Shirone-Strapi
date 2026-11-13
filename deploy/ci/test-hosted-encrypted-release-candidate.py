@@ -28,6 +28,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_push_candidate_preserves_the_proven_manual_jobs(self):
         installed = yaml.load((HERE.parent.parent / '.github/workflows/shirone-release.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(self.doc['name'], installed['name'])
         self.assertEqual(self.doc['jobs'], installed['jobs'])
         self.assertEqual(self.doc['concurrency'], installed['concurrency'])
 

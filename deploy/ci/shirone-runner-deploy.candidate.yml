@@ -1,7 +1,11 @@
-# Manual candidate only. Copy to .github/workflows only after provisioning and
+# Inactive candidate. Copy to .github/workflows only after provisioning and
 # isolated end-to-end review; this file does not schedule or enable deployment.
 name: Shirone reviewed runner deployment
 on:
+  workflow_run:
+    workflows: [Shirone encrypted release validation]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_run_id:
@@ -14,7 +18,16 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    if: github.repository == 'Hyperbola-QAQ/Shirone-Strapi' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'Hyperbola-QAQ/Shirone-Strapi' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == 'Hyperbola-QAQ/Shirone-Strapi' &&
+        github.event.workflow_run.head_sha == github.sha &&
+        (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
     runs-on: [self-hosted, linux, shirone-deploy-imini]
     timeout-minutes: 120
     permissions:
@@ -23,7 +36,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+      RELEASE_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.release_run_id }}
       SHIRONE_CONTROLLER_LOCAL: '1'
       SHIRONE_CONTROLLER_RUNNER: '1'
       PYTHONPATH: /home/github-actions/.local/share/shirone-release/tools/root/usr/lib/python3/dist-packages
