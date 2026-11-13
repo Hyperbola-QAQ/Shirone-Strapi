@@ -47,64 +47,57 @@
                             raise ValueError('unsafe ancestor')
                         os.close(fd)
                         fd = nxt
-                    os.mkdir('shirone-release', 0o700, dir_fd=fd)
+                    try: os.mkdir('shirone-release', 0o700, dir_fd=fd)
+                    except FileExistsError: pass
                     child = os.open('shirone-release', flags, dir_fd=fd)
                     try:
-                        os.mkdir('ansible', 0o700, dir_fd=child)
-                        ops = os.open('ansible', flags, dir_fd=child)
-                        try: os.mkdir('inventory', 0o700, dir_fd=ops)
-                        finally: os.close(ops)
+                        info = os.fstat(child)
+                        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                            raise ValueError('unsafe release directory')
+                        try: os.stat('tools', dir_fd=child, follow_symlinks=False)
+                        except FileNotFoundError: pass
+                        else: raise ValueError('tools already exist; review before retry')
                     finally: os.close(child)
                 finally: os.close(fd)
 
-        - name: Copy pinned user-space installer
-          ansible.builtin.copy:
-            src: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/ci/install-controller-tools.py"
-            dest: "{{ shirone_runner_share }}/install-controller-tools.py"
-            owner: github-actions
-            group: github-actions
-            mode: '0700'
-            force: false
+        - name: Install pinned user-space installer as runner
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - -c
+              - |
+                import hashlib, os, sys
+                data = sys.stdin.buffer.read()
+                if hashlib.sha256(data).hexdigest() != 'c61d76efaa2b7012e88a327790bc8e5d5d06ca9679cf82ac7adae82cc533467f':
+                    raise ValueError('installer checksum mismatch')
+                directory = os.open('/home/github-actions/.local/share/shirone-release', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    try: fd = os.open('install-controller-tools.py', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700, dir_fd=directory)
+                    except FileExistsError: pass
+                    else:
+                        with os.fdopen(fd, 'wb') as output: output.write(data)
+                finally: os.close(directory)
+            stdin: "{{ lookup('file', lookup('env', 'SHIRONE_WORKSPACE') + '/deploy/ci/install-controller-tools.py', rstrip=False) }}"
+            stdin_add_newline: false
+
+        - name: Inspect copied installer without following links
+          ansible.builtin.stat:
+            path: "{{ shirone_runner_share }}/install-controller-tools.py"
+            follow: false
+            checksum_algorithm: sha256
+          register: shirone_tools_installer
+
+        - name: Require exact runner-owned installer
+          ansible.builtin.assert:
+            that:
+              - shirone_tools_installer.stat.isreg | default(false)
+              - not (shirone_tools_installer.stat.islnk | default(false))
+              - shirone_tools_installer.stat.pw_name == 'github-actions'
+              - shirone_tools_installer.stat.mode == '0700'
+              - shirone_tools_installer.stat.checksum == 'c61d76efaa2b7012e88a327790bc8e5d5d06ca9679cf82ac7adae82cc533467f'
 
         - name: Install pinned tools without credentials
           ansible.builtin.command:
             argv: [/usr/bin/python3, "{{ shirone_runner_share }}/install-controller-tools.py", --install, --destination, "{{ shirone_runner_share }}/tools"]
-            creates: "{{ shirone_runner_share }}/tools"
           become_user: github-actions
 
-        - name: Copy reviewed operations source playbooks
-          ansible.builtin.copy:
-            src: "{{ shirone_runner_ops_source }}/update_shirone_{{ item }}_image.yml"
-            dest: "{{ shirone_runner_share }}/ansible/update_shirone_{{ item }}_image.yml"
-            owner: github-actions
-            group: github-actions
-            mode: '0600'
-            force: false
-          loop: [cms, ssr]
-
-        - name: Install credential-free local inventory
-          ansible.builtin.copy:
-            content: |
-              all:
-                hosts:
-                  hyqaq-imini:
-                    ansible_host: 192.168.86.11
-                    ansible_user: github-actions
-                    ansible_connection: local
-            dest: "{{ shirone_runner_share }}/ansible/inventory/hosts.yml"
-            owner: github-actions
-            group: github-actions
-            mode: '0600'
-            force: false
-
-        - name: Install restricted Ansible settings
-          ansible.builtin.copy:
-            content: |
-              [defaults]
-              host_key_checking = True
-              retry_files_enabled = False
-            dest: "{{ shirone_runner_share }}/ansible/ansible.cfg"
-            owner: github-actions
-            group: github-actions
-            mode: '0600'
-            force: false
