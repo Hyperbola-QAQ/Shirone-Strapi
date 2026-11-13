@@ -114,6 +114,13 @@ def copy(run_id, component, archive_digest, manifest_digest, runner_uid):
                                      stderr=subprocess.DEVNULL, env=env, pass_fds=(auth_fd,)).stdout
                 if 'sha256:' + hashlib.sha256(raw).hexdigest() != manifest_digest:
                     raise ValueError('registry manifest digest mismatch')
+                os.lseek(auth_fd, 0, os.SEEK_SET)
+                immutable = f'{REGISTRY}/shirone/{component}@{manifest_digest}'
+                raw = subprocess.run([SKOPEO, 'inspect', '--raw', '--authfile', auth_path, '--cert-dir', CERT_DIR,
+                                      'docker://' + immutable], check=True, timeout=120, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, env=env, pass_fds=(auth_fd,)).stdout
+                if 'sha256:' + hashlib.sha256(raw).hexdigest() != manifest_digest:
+                    raise ValueError('immutable registry digest mismatch')
             finally:
                 os.close(auth_fd)
     finally:

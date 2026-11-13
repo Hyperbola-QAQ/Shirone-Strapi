@@ -7,6 +7,9 @@ release/rollback validation and is not a production authorization boundary.
 """
 import argparse
 import copy
+import hashlib
+import os
+import shutil
 import importlib.util
 import re
 import subprocess
@@ -85,6 +88,33 @@ def validate_chain(component, source, deployment, digests):
     require(final == component, 'last release commit is not requested component')
 
 
+RUNNER_TEMP = Path('/home/github-actions/actions-runner/_work/_temp')
+
+
+def runner_copy(image, component, manifest_digest):
+    # The wrapper limits registry write access; provenance is verified above.
+    run_id = os.environ.get('GITHUB_RUN_ID', '')
+    require(bool(re.fullmatch(r'[1-9][0-9]*', run_id)), 'valid runner job id required')
+    require(os.environ.get('SHIRONE_CONTROLLER_LOCAL') == '1', 'local runner mode required')
+    directory = RUNNER_TEMP / ('shirone-release-' + run_id)
+    directory.mkdir(mode=0o700)  # refuse pre-existing paths, including symlinks
+    archive = directory / (component + '.oci.tar')
+    try:
+        digest = hashlib.sha256()
+        with image.open('rb') as src, archive.open('xb') as dst:
+            os.fchmod(dst.fileno(), 0o600)
+            while block := src.read(1024 * 1024):
+                digest.update(block)
+                dst.write(block)
+            dst.flush()
+            os.fsync(dst.fileno())
+        subprocess.run(['sudo', '-n', '/usr/local/libexec/shirone-registry-copy', run_id, component,
+                        'sha256:' + digest.hexdigest(), manifest_digest], check=True)
+    finally:
+        # Only the newly created, fixed-name private staging directory is removed.
+        shutil.rmtree(directory)
+
+
 def promote(component, source, deployment, signer, uid, old, metadata, ciphertext, ciphertext_digest,
             key, recipient, digests, copy_image=False, apply=False):
     require(component in ('cms', 'ssr'), 'unsupported component')
@@ -112,15 +142,21 @@ def promote(component, source, deployment, signer, uid, old, metadata, ciphertex
         env.inspect(plaintext, source, fingerprint, digests, extracted, verify_oci=True)
         image = extracted / env.FILES[component]
         require(env.oci.verify(image)['manifest_digest'] == digests[component], 'archive manifest mismatch')
-        cert_dir = registry.destination_cert_dir()
-        if copy_image:
+        runner = os.environ.get('SHIRONE_CONTROLLER_RUNNER') == '1'
+        if runner:
+            require(copy_image, 'runner promotion requires copying the verified archive')
+            runner_copy(image, component, digests[component])
+        else:
+            cert_dir = registry.destination_cert_dir()
+        if copy_image and not runner:
             # A fresh staging tag avoids overwriting another release. A failure
             # can leave that tag; an operator must review before cleanup.
             tag = f'192.168.86.100:30500/shirone/{component}:candidate-{uuid.uuid4().hex}'
             subprocess.run(['skopeo', 'copy', '--all', '--preserve-digests', '--dest-cert-dir', cert_dir,
                             f'oci-archive:{image}', f'docker://{tag}'], check=True)
             registry.assert_digest(registry.inspect(f'docker://{tag}', cert_dir), digests[component])
-        registry.assert_digest(registry.inspect(f'docker://{target}', cert_dir), digests[component])
+        if not runner:
+            registry.assert_digest(registry.inspect(f'docker://{target}', cert_dir), digests[component])
         command = ['bash', str(HERE / 'promote-reviewed.sh'), component, deployment, uid, old, target]
         if apply:
             command.append('--apply')

@@ -50,7 +50,7 @@ class RestrictedCopyTests(unittest.TestCase):
              patch.object(registry, 'read_authorization', return_value=self.auth), \
              patch.object(registry.subprocess, 'run', side_effect=self.skopeo):
             registry.copy(123, 'cms', self.archive_digest, self.manifest_digest, os.getuid())
-        self.assertEqual([args[1] for args in self.calls], ['copy', 'inspect'])
+        self.assertEqual([args[1] for args in self.calls], ['copy', 'inspect', 'inspect'])
         self.assertEqual([p.name for p in self.directory.iterdir()], ['cms.oci.tar'])
 
     def test_untrusted_tmpdir_is_not_used(self):

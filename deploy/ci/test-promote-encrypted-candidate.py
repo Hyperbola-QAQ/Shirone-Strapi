@@ -104,6 +104,34 @@ class Guards(unittest.TestCase):
         self.assertEqual(self.calls[-2], 'digest')
         self.assertEqual(self.calls[-1][-1], '--apply')
 
+    def test_runner_stages_only_verified_archive_and_cleans_it(self):
+        image = Path(self.tmp.name) / 'image.tar'
+        image.write_bytes(b'synthetic image')
+        runner_root = Path(self.tmp.name) / 'runner'
+        runner_root.mkdir()
+        observed = []
+        def sudo(command, **kwargs):
+            staged = runner_root / 'shirone-release-123' / 'cms.oci.tar'
+            self.assertEqual(staged.read_bytes(), b'synthetic image')
+            self.assertEqual(staged.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(command[3:5], ['123', 'cms'])
+            observed.append(command)
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'SHIRONE_CONTROLLER_LOCAL': '1'}), \
+             patch.object(p, 'RUNNER_TEMP', runner_root), patch.object(p.subprocess, 'run', side_effect=sudo):
+            p.runner_copy(image, 'cms', DIGESTS['cms'])
+        self.assertEqual(len(observed), 1)
+        self.assertFalse((runner_root / 'shirone-release-123').exists())
+
+    def test_runner_refuses_existing_stage(self):
+        runner_root = Path(self.tmp.name) / 'runner'
+        runner_root.mkdir()
+        (runner_root / 'shirone-release-123').mkdir()
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'SHIRONE_CONTROLLER_LOCAL': '1'}), \
+             patch.object(p, 'RUNNER_TEMP', runner_root):
+            with self.assertRaises(FileExistsError):
+                p.runner_copy(Path('/unused'), 'cms', DIGESTS['cms'])
+        self.assertTrue((runner_root / 'shirone-release-123').is_dir())
+
     def test_invalid_uid_or_image_rejected_before_any_action(self):
         with self.assertRaises(ValueError):
             p.promote('cms', SOURCE, DEPLOYMENT, SIGNER, 'bad', OLD, '/metadata', '/cipher',
