@@ -84,8 +84,8 @@ listed_hosts=$(ansible "$control_ip" -i "$control_ip," -u "$control_user" --list
 ansible-playbook "${args[@]}"
 if [[ "$mode" == --apply ]]; then
   ansible "$control_ip" -i "$control_ip," -u "$control_user" "${local_connection[@]}" -e '{"ansible_ssh_common_args":"-o StrictHostKeyChecking=yes"}' -m command -a "kubectl --kubeconfig=$kubeconfig -n mizuki rollout status deployment/shirone-${component} --timeout=180s"
-  curl --fail --silent --show-error --max-time 20 --output /dev/null https://hyperbola.cc/
-  curl --fail --silent --show-error --max-time 20 --output /dev/null https://strapi.hyperbola.cc/admin
+  bash "$repo_root/deploy/ci/public-health-check.sh" https://hyperbola.cc/
+  bash "$repo_root/deploy/ci/public-health-check.sh" https://strapi.hyperbola.cc/admin
   printf '%s\n' 'Rollout and public health checks passed; verify publication/search and recorded digest.'
 else
   printf '%s\n' 'Admission preview completed; no production update requested.'
