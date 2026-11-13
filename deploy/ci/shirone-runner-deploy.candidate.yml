@@ -77,6 +77,7 @@ jobs:
           ASKPASS
           chmod 700 "$temp/askpass"
           export GIT_ASKPASS="$temp/askpass" GIT_TERMINAL_PROMPT=0
+          python3 deploy/ci/check-git-push.py
           python3 deploy/ci/automatic-release-controller.py --isolated-test-only \
             --run-id "$RELEASE_RUN_ID" --checkout "$GITHUB_WORKSPACE" \
             --state /home/github-actions/.local/state/shirone-release \
