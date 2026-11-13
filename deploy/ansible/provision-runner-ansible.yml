@@ -1,0 +1,149 @@
+---
+- name: Stage the reviewed Ansible entrypoints for the Shirone runner
+  hosts: "{{ shirone_runner_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  become: false
+  serial: 1
+  vars:
+    shirone_runner_ansible_apply: false
+    shirone_runner_ansible_confirm: ''
+    shirone_runner_ansible_root: /home/github-actions/.local/share/shirone-release/ansible
+    shirone_ops_root: /home/hyperbola/Work/ansible-debian-k8s
+    shirone_runner_inventory: |
+      all:
+        children:
+          bootstrap_control_plane:
+            hosts:
+              hyqaq-imini:
+                ansible_host: 192.168.86.11
+                ansible_user: github-actions
+    shirone_runner_ansible_config: |
+      [defaults]
+      host_key_checking = True
+      retry_files_enabled = False
+  tasks:
+    - name: Require fixed paths and explicit application
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - shirone_runner_ansible_root == '/home/github-actions/.local/share/shirone-release/ansible'
+          - shirone_ops_root == '/home/hyperbola/Work/ansible-debian-k8s'
+          - not (shirone_runner_ansible_apply | bool) or shirone_runner_ansible_confirm == 'stage-shirone-runner-ansible'
+        quiet: true
+
+    - name: Verify reviewed playbooks match the Ansible source
+      ansible.builtin.assert:
+        that:
+          - lookup('file', shirone_ops_root + '/update_shirone_' + item + '_image.yml', rstrip=false) == lookup('file', lookup('env', 'SHIRONE_WORKSPACE') + '/deploy/ansible/update-' + item + '-image.yml', rstrip=false)
+        quiet: true
+      loop: [cms, ssr]
+
+    - name: Inspect runner directories
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /home/github-actions/.local
+        - /home/github-actions/.local/share
+        - /home/github-actions/.local/share/shirone-release
+        - /home/github-actions/.local/share/shirone-release/ansible
+        - /home/github-actions/.local/share/shirone-release/ansible/inventory
+      register: shirone_runner_ansible_directories
+      become: true
+
+    - name: Refuse unexpected existing directories
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists or (item.stat.isdir and not item.stat.islnk and item.stat.pw_name == 'github-actions')
+        quiet: true
+      loop: "{{ shirone_runner_ansible_directories.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Inspect destination files
+      ansible.builtin.stat:
+        path: "{{ shirone_runner_ansible_root }}/{{ item }}"
+        follow: false
+      loop: [ansible.cfg, inventory/hosts.yml, update_shirone_cms_image.yml, update_shirone_ssr_image.yml]
+      register: shirone_runner_ansible_files
+      become: true
+
+    - name: Refuse to overwrite any existing file
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists and not (item.stat.islnk | default(false))
+        quiet: true
+      loop: "{{ shirone_runner_ansible_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Create missing private directories
+      ansible.builtin.file:
+        path: "{{ item.item }}"
+        state: directory
+        owner: github-actions
+        group: github-actions
+        mode: '0700'
+      loop: "{{ shirone_runner_ansible_directories.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      become: true
+      when: shirone_runner_ansible_apply | bool and not ansible_check_mode and not item.stat.exists
+
+    - name: Stage fixed Ansible settings
+      ansible.builtin.copy:
+        dest: "{{ shirone_runner_ansible_root }}/{{ item.name }}"
+        content: "{{ item.content }}"
+        owner: github-actions
+        group: github-actions
+        mode: '0600'
+        force: false
+      loop:
+        - {name: ansible.cfg, content: "{{ shirone_runner_ansible_config }}"}
+        - {name: inventory/hosts.yml, content: "{{ shirone_runner_inventory }}"}
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+      when: shirone_runner_ansible_apply | bool and not ansible_check_mode
+
+    - name: Stage only the verified source playbooks
+      ansible.builtin.copy:
+        dest: "{{ shirone_runner_ansible_root }}/update_shirone_{{ item }}_image.yml"
+        content: "{{ lookup('file', shirone_ops_root + '/update_shirone_' + item + '_image.yml', rstrip=false) }}"
+        owner: github-actions
+        group: github-actions
+        mode: '0600'
+        force: false
+      loop: [cms, ssr]
+      become: true
+      when: shirone_runner_ansible_apply | bool and not ansible_check_mode
+
+    - name: Confirm all staged files match the reviewed content
+      ansible.builtin.stat:
+        path: "{{ shirone_runner_ansible_root }}/{{ item.name }}"
+        checksum_algorithm: sha256
+        follow: false
+      loop:
+        - {name: ansible.cfg, content: "{{ shirone_runner_ansible_config }}"}
+        - {name: inventory/hosts.yml, content: "{{ shirone_runner_inventory }}"}
+        - {name: update_shirone_cms_image.yml, content: "{{ lookup('file', shirone_ops_root + '/update_shirone_cms_image.yml', rstrip=false) }}"}
+        - {name: update_shirone_ssr_image.yml, content: "{{ lookup('file', shirone_ops_root + '/update_shirone_ssr_image.yml', rstrip=false) }}"}
+      loop_control:
+        label: "{{ item.name }}"
+      register: shirone_runner_ansible_staged
+      become: true
+      when: shirone_runner_ansible_apply | bool and not ansible_check_mode
+
+    - name: Reject unexpected staged files
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - not (item.stat.islnk | default(false))
+          - item.stat.pw_name == 'github-actions'
+          - item.stat.mode == '0600'
+          - item.stat.checksum == (item.item.content | hash('sha256'))
+        quiet: true
+      loop: "{{ shirone_runner_ansible_staged.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: shirone_runner_ansible_apply | bool and not ansible_check_mode
