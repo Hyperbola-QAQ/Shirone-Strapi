@@ -1,0 +1,69 @@
+# Manual candidate only. Copy to .github/workflows only after provisioning and
+# isolated end-to-end review; this file does not schedule or enable deployment.
+name: Shirone reviewed runner deployment
+on:
+  workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: Successful signed Shirone release run ID
+        required: true
+        type: string
+permissions: {}
+concurrency:
+  group: shirone-production-release
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.repository == 'Hyperbola-QAQ/Shirone-Strapi' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, shirone-deploy-imini]
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+      SHIRONE_CONTROLLER_LOCAL: '1'
+      SHIRONE_CONTROLLER_RUNNER: '1'
+      PYTHONPATH: /home/github-actions/.local/share/shirone-release/tools/root/usr/lib/python3/dist-packages
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify runner and run reviewed release controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          tools=/home/github-actions/.local/share/shirone-release/tools/bin
+          export PATH="$tools:/usr/local/bin:/usr/bin:/bin"
+          [[ "$RELEASE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$(hostname)" == hyqaq-imini && "$(id -un)" == github-actions ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$(gh api repos/Hyperbola-QAQ/Shirone-Strapi/git/ref/heads/main --jq .object.sha)" == "$GITHUB_SHA" ]]
+          [[ -f deploy/ci/release-recipient.txt && ! -L deploy/ci/release-recipient.txt ]]
+          recipient=$(cat deploy/ci/release-recipient.txt)
+          [[ "$recipient" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$ ]]
+          git checkout -B main "$GITHUB_SHA"
+          git config --local user.name 'Shirone release automation'
+          git config --local user.email 'shirone-release@users.noreply.github.com'
+          temp=$(mktemp -d "$RUNNER_TEMP/shirone-git-auth.XXXXXXXX")
+          trap 'rm -rf -- "$temp"' EXIT
+          cat > "$temp/askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$GH_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 700 "$temp/askpass"
+          export GIT_ASKPASS="$temp/askpass" GIT_TERMINAL_PROMPT=0
+          python3 deploy/ci/automatic-release-controller.py --isolated-test-only \
+            --run-id "$RELEASE_RUN_ID" --checkout "$GITHUB_WORKSPACE" \
+            --state /home/github-actions/.local/state/shirone-release \
+            --key /home/github-actions/.local/state/shirone-release/identity.agekey \
+            --previous-record /home/github-actions/.local/state/shirone-release/previous-release.json \
+            --recipient "$recipient"
