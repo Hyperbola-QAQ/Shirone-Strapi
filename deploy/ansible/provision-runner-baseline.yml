@@ -1,0 +1,175 @@
+---
+- name: Record the currently deployed Shirone release for the runner
+  hosts: "{{ shirone_runner_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  become: false
+  serial: 1
+  vars:
+    shirone_baseline_apply: false
+    shirone_baseline_confirm: ''
+    shirone_baseline_path: /home/github-actions/.local/state/shirone-release/previous-release.json
+    shirone_admin_kubeconfig: /home/hyperbola/.kube/config
+    shirone_baseline_source: 2f430442387b2db6277f0e7c29f7c33327e8e35c
+    shirone_baseline_components:
+      cms:
+        uid: 985c4d9a-ddef-4296-ad08-5d78954b971f
+        image: 192.168.86.100:30500/shirone/cms@sha256:9bd13c1ef7e0d033a7247df25af585ab8e49a949ff69c0b3d08fcda8a0154b34
+      ssr:
+        uid: 1001b2e1-019a-4a49-8d5a-0eba7b9de53e
+        image: 192.168.86.100:30500/shirone/ssr@sha256:7c4c40f94ba27209cb45aad5ab3c8b0acf44ec4b89aa6b8b216bc0db21e382d0
+    shirone_baseline_probe:
+      query: MangoHud
+      url: /posts/tech/linux_desktop/mangohud-cpu%E5%8A%9F%E8%80%97%E4%B8%8D%E6%98%BE%E7%A4%BA%E6%8E%92%E6%9F%A5rapl%E6%9D%83%E9%99%90%E4%B8%8Ecapability%E8%BE%B9%E7%95%8C/
+  tasks:
+    - name: Require fixed paths and explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - not (shirone_baseline_apply | bool) or shirone_baseline_confirm == 'record-shirone-runner-baseline'
+          - shirone_baseline_path == '/home/github-actions/.local/state/shirone-release/previous-release.json'
+          - shirone_admin_kubeconfig == '/home/hyperbola/.kube/config'
+          - shirone_baseline_source == '2f430442387b2db6277f0e7c29f7c33327e8e35c'
+        quiet: true
+
+    - name: Confirm the deployed source is an ancestor
+      ansible.builtin.command:
+        argv: [git, merge-base, --is-ancestor, "{{ shirone_baseline_source }}", HEAD]
+        chdir: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}"
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Confirm CMS and image build inputs remain compatible
+      ansible.builtin.command:
+        argv:
+          - git
+          - diff
+          - --exit-code
+          - "{{ shirone_baseline_source }}"
+          - HEAD
+          - --
+          - cms
+          - Dockerfile
+          - package.json
+          - pnpm-lock.yaml
+          - deploy/ci/build-tested-oci-candidate.sh
+          - deploy/ci/build-encrypted-release-candidate.sh
+          - deploy/ci/rebuild-hosted-bases-candidate.sh
+          - deploy/ci/Dockerfile.node-reconstruction-candidate
+        chdir: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}"
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Read live Deployments without logging their contents
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", -n, mizuki, get, deployment, "shirone-{{ item }}", -o, json]
+      loop: [cms, ssr]
+      register: shirone_baseline_live
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require exact reviewed live identities and images
+      ansible.builtin.assert:
+        that:
+          - (item.stdout | from_json).metadata.uid == shirone_baseline_components[item.item].uid
+          - (item.stdout | from_json).spec.template.spec.containers | length == 1
+          - (item.stdout | from_json).spec.template.spec.containers[0].image == shirone_baseline_components[item.item].image
+        quiet: true
+      loop: "{{ shirone_baseline_live.results }}"
+      no_log: true
+
+    - name: Verify the published search probe
+      ansible.builtin.uri:
+        url: https://hyperbola.cc/api/search/?q=MangoHud
+        return_content: true
+        status_code: 200
+        timeout: 15
+      register: shirone_baseline_search
+      delegate_to: localhost
+      check_mode: false
+
+    - name: Require the exact article in search results
+      ansible.builtin.assert:
+        that:
+          - shirone_baseline_probe.url in (shirone_baseline_search.json.hits | map(attribute='url') | list)
+        quiet: true
+
+    - name: Inspect the runner state directory
+      ansible.builtin.stat:
+        path: /home/github-actions/.local/state/shirone-release
+        follow: false
+      register: shirone_baseline_directory
+      become: true
+
+    - name: Require a private runner-owned state directory
+      ansible.builtin.assert:
+        that:
+          - shirone_baseline_directory.stat.isdir | default(false)
+          - not (shirone_baseline_directory.stat.islnk | default(false))
+          - shirone_baseline_directory.stat.pw_name == 'github-actions'
+          - shirone_baseline_directory.stat.mode == '0700'
+        quiet: true
+
+    - name: Inspect the baseline destination
+      ansible.builtin.stat:
+        path: "{{ shirone_baseline_path }}"
+        follow: false
+      register: shirone_baseline_existing
+      become: true
+
+    - name: Refuse to overwrite an existing baseline
+      ansible.builtin.assert:
+        that:
+          - not shirone_baseline_existing.stat.exists
+          - not (shirone_baseline_existing.stat.islnk | default(false))
+        quiet: true
+
+    - name: Create the non-secret baseline
+      ansible.builtin.copy:
+        dest: "{{ shirone_baseline_path }}"
+        content: "{{ {'source': shirone_baseline_source, 'components': shirone_baseline_components, 'rollback_compatible': true, 'search_probe': shirone_baseline_probe} | to_nice_json }}"
+        owner: github-actions
+        group: github-actions
+        mode: '0600'
+        force: false
+      become: true
+      when: shirone_baseline_apply | bool and not ansible_check_mode
+
+    - name: Recheck the created baseline
+      ansible.builtin.stat:
+        path: "{{ shirone_baseline_path }}"
+        follow: false
+      register: shirone_baseline_created
+      become: true
+      when: shirone_baseline_apply | bool and not ansible_check_mode
+
+    - name: Require private ownership of the baseline
+      ansible.builtin.assert:
+        that:
+          - shirone_baseline_created.stat.isreg | default(false)
+          - not (shirone_baseline_created.stat.islnk | default(false))
+          - shirone_baseline_created.stat.pw_name == 'github-actions'
+          - shirone_baseline_created.stat.mode == '0600'
+        quiet: true
+      when: shirone_baseline_apply | bool and not ansible_check_mode
+
+    - name: Read the created baseline
+      ansible.builtin.slurp:
+        src: "{{ shirone_baseline_path }}"
+      register: shirone_baseline_content
+      become: true
+      no_log: true
+      when: shirone_baseline_apply | bool and not ansible_check_mode
+
+    - name: Reject a concurrent or unexpected baseline
+      ansible.builtin.assert:
+        that:
+          - (shirone_baseline_content.content | b64decode | from_json).source == shirone_baseline_source
+          - (shirone_baseline_content.content | b64decode | from_json).components == shirone_baseline_components
+          - (shirone_baseline_content.content | b64decode | from_json).rollback_compatible == true
+          - (shirone_baseline_content.content | b64decode | from_json).search_probe == shirone_baseline_probe
+        quiet: true
+      no_log: true
+      when: shirone_baseline_apply | bool and not ansible_check_mode
