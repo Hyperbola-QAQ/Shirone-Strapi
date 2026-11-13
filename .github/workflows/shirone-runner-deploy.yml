@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Verify runner and run reviewed release controller
         shell: bash
@@ -42,6 +42,9 @@ jobs:
           [[ "$(hostname)" == hyqaq-imini && "$(id -un)" == github-actions ]]
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
           [[ "$(gh api repos/Hyperbola-QAQ/Shirone-Strapi/git/ref/heads/main --jq .object.sha)" == "$GITHUB_SHA" ]]
+          # Fetch main history only: previous release source must be available,
+          # while the independent archived site history is not needed.
+          bash deploy/ci/fetch-main-history.sh "$GITHUB_SHA"
           [[ -f deploy/ci/release-recipient.txt && ! -L deploy/ci/release-recipient.txt ]]
           recipient=$(cat deploy/ci/release-recipient.txt)
           [[ "$recipient" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$ ]]

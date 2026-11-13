@@ -37,16 +37,26 @@ class RunnerWorkflowTests(unittest.TestCase):
         self.assertEqual(job['permissions'], {'actions': 'read', 'attestations': 'read', 'contents': 'write'})
         self.assertEqual(job['runs-on'], ['self-hosted', 'linux', 'shirone-deploy-imini'])
         self.assertEqual(job['steps'][0]['with']['persist-credentials'], 'false')
+        self.assertEqual(job['steps'][0]['with']['fetch-depth'], '1')
         command = job['steps'][1]['run']
         self.assertIn('[[ "$RELEASE_RUN_ID" =~ ^[1-9][0-9]*$ ]]', command)
         self.assertIn('--run-id "$RELEASE_RUN_ID"', command)
         self.assertIn('gh api repos/Hyperbola-QAQ/Shirone-Strapi/git/ref/heads/main', command)
+        self.assertIn('bash deploy/ci/fetch-main-history.sh "$GITHUB_SHA"', command)
         self.assertIn('automatic-release-controller.py --isolated-test-only', command)
 
     def test_manifest_only_commits_do_not_trigger_a_build(self):
         self.assertEqual(self.build['on']['push']['branches'], ['main'])
         self.assertEqual(self.build['on']['push']['paths-ignore'], ['deploy/k8s/**'])
         self.assertEqual(self.doc['concurrency']['cancel-in-progress'], 'false')
+
+    def test_installed_manual_workflow_uses_the_same_main_only_fetch(self):
+        installed = yaml.load((HERE.parent.parent / '.github/workflows/shirone-runner-deploy.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(set(installed['on']), {'workflow_dispatch'})
+        steps = installed['jobs']['deploy']['steps']
+        self.assertEqual(steps[0]['with']['fetch-depth'], '1')
+        self.assertEqual(steps[0]['with']['persist-credentials'], 'false')
+        self.assertIn('bash deploy/ci/fetch-main-history.sh "$GITHUB_SHA"', steps[1]['run'])
 
 
 if __name__ == '__main__':
