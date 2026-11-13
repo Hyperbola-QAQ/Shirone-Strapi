@@ -46,9 +46,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def artifact_location(artifact_id):
-    # gh may print environment-manager banners. Accept exactly one complete
-    # token line and never display or persist stdout, stderr or the signed URL.
+def github_credential():
+    # A job token is opaque: GH_TOKEN takes precedence and must never be
+    # logged or written to disk. Reject header controls and ambiguous blanks.
+    token = os.environ.get('GH_TOKEN')
+    if token is not None:
+        if not 1 <= len(token) <= 8192 or any(ord(ch) < 33 or ord(ch) > 126 for ch in token):
+            raise ValueError('invalid GitHub credential')
+        return token
+    # Without GH_TOKEN, tolerate a local environment-manager banner only when
+    # gh yields exactly one recognized credential line.
     result = subprocess.run(['gh', 'auth', 'token', '--hostname', 'github.com'],
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             check=True, timeout=30, text=True)
@@ -56,9 +63,14 @@ def artifact_location(artifact_id):
               if re.fullmatch(r'(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)', line)]
     if len(tokens) != 1:
         raise ValueError('unable to identify a unique GitHub credential')
+    return tokens[0]
+
+
+def artifact_location(artifact_id):
+    token = github_credential()
     request = urllib.request.Request(
         f'https://api.github.com/repos/{REPO}/actions/artifacts/{artifact_id}/zip',
-        headers={'Authorization': 'Bearer ' + tokens[0], 'Accept': 'application/vnd.github+json',
+        headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json',
                  'User-Agent': 'shirone-release-verification', 'X-GitHub-Api-Version': '2022-11-28'})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
