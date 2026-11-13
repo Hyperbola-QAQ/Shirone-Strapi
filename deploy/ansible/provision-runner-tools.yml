@@ -1,0 +1,108 @@
+---
+# Prepare isolated tools and the minimal Ansible source copy. Disabled by default.
+- name: Prepare Shirone runner tools and Ansible source
+  hosts: hyqaq-imini
+  gather_facts: false
+  become: true
+  vars:
+    shirone_runner_tools_apply: false
+    shirone_runner_share: /home/github-actions/.local/share/shirone-release
+    shirone_runner_ops_source: /home/hyperbola/Work/ansible-debian-k8s
+  tasks:
+    - name: Report disabled default
+      ansible.builtin.debug:
+        msg: Runner tools provisioning is disabled; no changes requested.
+      when: not shirone_runner_tools_apply | bool
+
+    - name: Prepare private runner environment
+      when: shirone_runner_tools_apply | bool
+      become_user: github-actions
+      block:
+        - name: Require reviewed target and paths
+          ansible.builtin.assert:
+            that:
+              - inventory_hostname == 'hyqaq-imini'
+              - shirone_runner_share == '/home/github-actions/.local/share/shirone-release'
+              - shirone_runner_ops_source == '/home/hyperbola/Work/ansible-debian-k8s'
+
+        - name: Create only a new private runner directory
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - -c
+              - |
+                import os, stat
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                fd = os.open('/home/github-actions', flags)
+                try:
+                    for part in ('.local', 'share'):
+                        try: os.mkdir(part, 0o700, dir_fd=fd)
+                        except FileExistsError: pass
+                        nxt = os.open(part, flags, dir_fd=fd)
+                        info = os.fstat(nxt)
+                        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                            os.close(nxt)
+                            raise ValueError('unsafe ancestor')
+                        os.close(fd)
+                        fd = nxt
+                    os.mkdir('shirone-release', 0o700, dir_fd=fd)
+                    child = os.open('shirone-release', flags, dir_fd=fd)
+                    try:
+                        os.mkdir('ansible', 0o700, dir_fd=child)
+                        ops = os.open('ansible', flags, dir_fd=child)
+                        try: os.mkdir('inventory', 0o700, dir_fd=ops)
+                        finally: os.close(ops)
+                    finally: os.close(child)
+                finally: os.close(fd)
+
+        - name: Copy pinned user-space installer
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../ci/install-controller-tools.py"
+            dest: "{{ shirone_runner_share }}/install-controller-tools.py"
+            owner: github-actions
+            group: github-actions
+            mode: '0700'
+            force: false
+
+        - name: Install pinned tools without credentials
+          ansible.builtin.command:
+            argv: [/usr/bin/python3, "{{ shirone_runner_share }}/install-controller-tools.py", --install, --destination, "{{ shirone_runner_share }}/tools"]
+            creates: "{{ shirone_runner_share }}/tools"
+          become_user: github-actions
+
+        - name: Copy reviewed operations source playbooks
+          ansible.builtin.copy:
+            src: "{{ shirone_runner_ops_source }}/update_shirone_{{ item }}_image.yml"
+            dest: "{{ shirone_runner_share }}/ansible/update_shirone_{{ item }}_image.yml"
+            owner: github-actions
+            group: github-actions
+            mode: '0600'
+            force: false
+          loop: [cms, ssr]
+
+        - name: Install credential-free local inventory
+          ansible.builtin.copy:
+            content: |
+              all:
+                hosts:
+                  hyqaq-imini:
+                    ansible_host: 192.168.86.11
+                    ansible_user: github-actions
+                    ansible_connection: local
+            dest: "{{ shirone_runner_share }}/ansible/inventory/hosts.yml"
+            owner: github-actions
+            group: github-actions
+            mode: '0600'
+            force: false
+
+        - name: Install restricted Ansible settings
+          ansible.builtin.copy:
+            content: |
+              [defaults]
+              host_key_checking = True
+              retry_files_enabled = False
+            dest: "{{ shirone_runner_share }}/ansible/ansible.cfg"
+            owner: github-actions
+            group: github-actions
+            mode: '0600'
+            force: false

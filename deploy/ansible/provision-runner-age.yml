@@ -1,0 +1,85 @@
+---
+# Disabled by default. Generates a new, independent runner identity in place.
+- name: Prepare Shirone runner release encryption identity
+  hosts: hyqaq-imini
+  gather_facts: false
+  become: true
+  vars:
+    shirone_runner_age_apply: false
+    shirone_runner_state: /home/github-actions/.local/state/shirone-release
+    shirone_runner_age_keygen: /home/github-actions/.local/share/shirone-release/tools/bin/age-keygen
+  tasks:
+    - name: Report disabled default
+      ansible.builtin.debug:
+        msg: Runner age identity provisioning is disabled; no changes requested.
+      when: not shirone_runner_age_apply | bool
+
+    - name: Generate a dedicated runner identity
+      when: shirone_runner_age_apply | bool
+      block:
+        - name: Verify target and fixed paths
+          ansible.builtin.assert:
+            that:
+              - inventory_hostname == 'hyqaq-imini'
+              - shirone_runner_state == '/home/github-actions/.local/state/shirone-release'
+              - shirone_runner_age_keygen == '/home/github-actions/.local/share/shirone-release/tools/bin/age-keygen'
+
+        - name: Inspect dedicated key generator
+          ansible.builtin.stat:
+            path: "{{ shirone_runner_age_keygen }}"
+          register: shirone_runner_keygen
+
+        - name: Require installed key generator
+          ansible.builtin.assert:
+            that:
+              - shirone_runner_keygen.stat.isreg | default(false)
+              - shirone_runner_keygen.stat.executable | default(false)
+
+        - name: Create private state as the unprivileged runner
+          ansible.builtin.command:
+            argv: [/usr/bin/python3, -c, "import os; os.makedirs('/home/github-actions/.local/state/shirone-release', mode=0o700, exist_ok=True)"]
+            creates: "{{ shirone_runner_state }}"
+          become_user: github-actions
+
+        - name: Verify state directory is private and not a symlink
+          ansible.builtin.stat:
+            path: "{{ shirone_runner_state }}"
+            follow: false
+          register: shirone_runner_state_info
+
+        - name: Require a private runner-owned directory
+          ansible.builtin.assert:
+            that:
+              - shirone_runner_state_info.stat.isdir | default(false)
+              - not (shirone_runner_state_info.stat.islnk | default(false))
+              - shirone_runner_state_info.stat.pw_name == 'github-actions'
+              - shirone_runner_state_info.stat.mode == '0700'
+
+        - name: Create independent age key without displaying it
+          ansible.builtin.command:
+            argv: ["{{ shirone_runner_age_keygen }}", -o, "{{ shirone_runner_state }}/identity.agekey"]
+            creates: "{{ shirone_runner_state }}/identity.agekey"
+          become_user: github-actions
+          no_log: true
+
+        - name: Inspect identity ownership and permissions
+          ansible.builtin.stat:
+            path: "{{ shirone_runner_state }}/identity.agekey"
+            follow: false
+          register: shirone_runner_identity
+          no_log: true
+
+        - name: Require private dedicated identity
+          ansible.builtin.assert:
+            that:
+              - shirone_runner_identity.stat.isreg | default(false)
+              - shirone_runner_identity.stat.pw_name == 'github-actions'
+              - shirone_runner_identity.stat.mode == '0600'
+          no_log: true
+
+        - name: Generate public recipient from dedicated identity
+          ansible.builtin.command:
+            argv: ["{{ shirone_runner_age_keygen }}", -y, -o, "{{ shirone_runner_state }}/recipient.txt", "{{ shirone_runner_state }}/identity.agekey"]
+            creates: "{{ shirone_runner_state }}/recipient.txt"
+          become_user: github-actions
+          no_log: true

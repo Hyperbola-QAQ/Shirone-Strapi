@@ -1,0 +1,93 @@
+---
+# Candidate only. This playbook is not invoked by existing deployment paths.
+# Apply explicitly only after the source script and runner identity are reviewed.
+- name: Prepare narrowly scoped Shirone runner registry staging
+  hosts: hyqaq-imini
+  gather_facts: false
+  become: true
+  vars:
+    shirone_registry_runner_apply: false
+    shirone_registry_sudo_content: "github-actions ALL=(root) NOPASSWD: NOSETENV: /usr/local/libexec/shirone-registry-copy *\n"
+    shirone_registry_runner_script: "{{ playbook_dir }}/../ci/runner-registry-copy.py"
+    shirone_registry_skopeo_version: "1.18.0+ds1-1+b5"
+  tasks:
+    - name: Report disabled default
+      ansible.builtin.debug:
+        msg: Registry runner provisioning is disabled; no changes requested.
+      when: not shirone_registry_runner_apply | bool
+
+    - name: Install reviewed registry staging entrypoint
+      when: shirone_registry_runner_apply | bool
+      block:
+        - name: Verify target host
+          ansible.builtin.assert:
+            that:
+              - inventory_hostname == 'hyqaq-imini'
+              - shirone_registry_skopeo_version == '1.18.0+ds1-1+b5'
+              - shirone_registry_runner_script == playbook_dir + '/../ci/runner-registry-copy.py'
+              - (shirone_registry_sudo_content | hash('sha256')) == '37c8dff035ec419ccba4a814908549eef5f817772007b1f302bf5c155c831c40'
+
+        - name: Install pinned registry copy tool
+          ansible.builtin.apt:
+            name: "skopeo={{ shirone_registry_skopeo_version }}"
+            state: present
+            update_cache: false
+
+        - name: Create root-owned entrypoint directory
+          ansible.builtin.file:
+            path: /usr/local/libexec
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+
+        - name: Install restricted registry entrypoint
+          ansible.builtin.copy:
+            src: "{{ shirone_registry_runner_script }}"
+            dest: /usr/local/libexec/shirone-registry-copy
+            owner: root
+            group: root
+            mode: '0755'
+            force: false
+
+        - name: Inspect installed entrypoint without following links
+          ansible.builtin.stat:
+            path: /usr/local/libexec/shirone-registry-copy
+            follow: false
+            checksum_algorithm: sha256
+          register: shirone_registry_installed
+
+        - name: Reject existing mismatched entrypoint
+          ansible.builtin.assert:
+            that:
+              - shirone_registry_installed.stat.isreg | default(false)
+              - not (shirone_registry_installed.stat.islnk | default(false))
+              - shirone_registry_installed.stat.pw_name == 'root'
+              - shirone_registry_installed.stat.mode == '0755'
+              - shirone_registry_installed.stat.checksum == (lookup('file', shirone_registry_runner_script, rstrip=False) | hash('sha256'))
+
+        - name: Install validated narrowly scoped sudo rule
+          ansible.builtin.copy:
+            content: "{{ shirone_registry_sudo_content }}"
+            dest: /etc/sudoers.d/shirone-runner-registry
+            owner: root
+            group: root
+            mode: '0440'
+            force: false
+            validate: /usr/sbin/visudo -cf %s
+
+        - name: Inspect existing sudo rule without following links
+          ansible.builtin.stat:
+            path: /etc/sudoers.d/shirone-runner-registry
+            follow: false
+            checksum_algorithm: sha256
+          register: shirone_registry_sudo_rule
+
+        - name: Reject existing mismatched sudo rule
+          ansible.builtin.assert:
+            that:
+              - shirone_registry_sudo_rule.stat.isreg | default(false)
+              - not (shirone_registry_sudo_rule.stat.islnk | default(false))
+              - shirone_registry_sudo_rule.stat.pw_name == 'root'
+              - shirone_registry_sudo_rule.stat.mode == '0440'
+              - shirone_registry_sudo_rule.stat.checksum == (shirone_registry_sudo_content | hash('sha256'))
