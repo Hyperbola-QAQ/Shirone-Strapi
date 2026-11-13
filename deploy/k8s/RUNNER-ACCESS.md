@@ -40,3 +40,23 @@ to write the whole registry. Registry credential provisioning must account for
 that boundary and preserve existing clients; do not copy root-only containerd
 credentials into a runner or change the shared registry spec without a reviewed
 Ansible change.
+
+On 2026-11-13 the create-only entrypoint was synchronized to the Ansible source
+as `provision_shirone_runner_access.yml`. Its real production check returned
+11 ok and 0 changed, then explicit application returned 23 ok and 4 changed.
+The created `mizuki` objects have these UIDs: ServiceAccount
+`41c07216-039d-47e7-b56d-18f09b2db6d9`, Role
+`bb2f3ccf-5782-4919-bd94-c15b11203211`, RoleBinding
+`a015bfba-e4e8-4512-9b7a-2bed502e768c`, and token Secret
+`755c5c84-161c-4071-a0c7-54821ded4f8e`. The generated kubeconfig is owned by
+`github-actions`, mode 0600, at
+`/home/github-actions/.local/state/shirone-release/kubeconfig` on imini.
+As the actual runner user, reads of both Deployments and a no-change CMS patch
+through server admission succeeded; listing Secrets and reading the old-site
+Deployment were forbidden. No deployment image was changed.
+
+To revoke, stop the release workflow first, verify the current object UIDs and
+runner file identity, then remove the dedicated token Secret and RoleBinding;
+remove the dedicated kubeconfig, Role and ServiceAccount only after confirming
+they are the objects above and no other consumer depends on them. Do not print
+the token or kubeconfig. The long-lived token does not expire automatically.
