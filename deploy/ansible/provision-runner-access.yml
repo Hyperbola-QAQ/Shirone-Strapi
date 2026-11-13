@@ -1,0 +1,221 @@
+---
+- name: Prepare scoped Kubernetes access for the Shirone runner
+  hosts: "{{ shirone_runner_hosts | default('bootstrap_control_plane') }}"
+  gather_facts: false
+  become: false
+  serial: 1
+  vars:
+    shirone_runner_apply: false
+    shirone_runner_confirm: ''
+    shirone_runner_kubeconfig: /home/github-actions/.local/state/shirone-release/kubeconfig
+    shirone_runner_namespace: mizuki
+    shirone_admin_kubeconfig: /home/hyperbola/.kube/config
+    shirone_runner_token_secret: shirone-release-runner-token
+    shirone_token_manifest: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: shirone-release-runner-token
+        namespace: mizuki
+        annotations:
+          kubernetes.io/service-account.name: shirone-release-runner
+      type: kubernetes.io/service-account-token
+  tasks:
+    - name: Require explicit application and fixed paths
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'SHIRONE_WORKSPACE') | length > 0
+          - not (shirone_runner_apply | bool) or shirone_runner_confirm == 'create-shirone-runner-access'
+          - shirone_runner_kubeconfig == '/home/github-actions/.local/state/shirone-release/kubeconfig'
+          - shirone_runner_namespace == 'mizuki'
+          - shirone_admin_kubeconfig == '/home/hyperbola/.kube/config'
+          - shirone_runner_token_secret == 'shirone-release-runner-token'
+        quiet: true
+
+    - name: Check runner account identity
+      ansible.builtin.command:
+        argv: [getent, passwd, github-actions]
+      register: shirone_runner_account
+      changed_when: false
+      check_mode: false
+
+    - name: Require the expected runner home
+      ansible.builtin.assert:
+        that:
+          - shirone_runner_account.stdout.split(':')[5] == '/home/github-actions'
+        quiet: true
+
+    - name: Inspect runner state directories
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /home/github-actions/.local
+        - /home/github-actions/.local/state
+        - /home/github-actions/.local/state/shirone-release
+      register: shirone_runner_directories
+      become: true
+
+    - name: Refuse unexpected existing runner directories
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists or (item.stat.isdir and not item.stat.islnk and item.stat.pw_name == 'github-actions')
+        quiet: true
+      loop: "{{ shirone_runner_directories.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Inspect the destination kubeconfig
+      ansible.builtin.stat:
+        path: "{{ shirone_runner_kubeconfig }}"
+        follow: false
+      register: shirone_runner_config
+      become: true
+
+    - name: Refuse to overwrite a kubeconfig
+      ansible.builtin.assert:
+        that:
+          - not shirone_runner_config.stat.exists
+          - not shirone_runner_config.stat.islnk | default(false)
+        quiet: true
+
+    - name: Inspect fixed access objects
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", -n, mizuki, get, "{{ item }}", --ignore-not-found, -o, name]
+      loop:
+        - serviceaccount/shirone-release-runner
+        - role/shirone-release-runner
+        - rolebinding/shirone-release-runner
+        - secret/shirone-release-runner-token
+      register: shirone_existing_objects
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse to modify existing objects
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim | length == 0
+        quiet: true
+      loop: "{{ shirone_existing_objects.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Validate the scoped RBAC through admission
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", create, --dry-run=server, -f, -, -o, name]
+        stdin: "{{ lookup('file', lookup('env', 'SHIRONE_WORKSPACE') + '/deploy/k8s/runner-rbac-candidate.yaml') }}"
+      changed_when: false
+      check_mode: false
+
+    - name: Validate the token Secret through admission
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", create, --dry-run=server, -f, -, -o, name]
+        stdin: "{{ shirone_token_manifest }}"
+      changed_when: false
+      check_mode: false
+
+    - name: Create the scoped RBAC
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", create, -f, -, -o, name]
+        stdin: "{{ lookup('file', lookup('env', 'SHIRONE_WORKSPACE') + '/deploy/k8s/runner-rbac-candidate.yaml') }}"
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Create the runner token Secret
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", create, -f, -, -o, name]
+        stdin: "{{ shirone_token_manifest }}"
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Wait for the dedicated token
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", -n, mizuki, get, secret, shirone-release-runner-token, -o, "jsonpath={.data.token}"]
+      register: shirone_runner_token
+      until: shirone_runner_token.stdout | length > 0
+      retries: 30
+      delay: 2
+      changed_when: false
+      no_log: true
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Read the API endpoint
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", config, view, --minify, -o, "jsonpath={.clusters[0].cluster.server}"]
+      register: shirone_api_endpoint
+      changed_when: false
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Read the public CA only
+      ansible.builtin.command:
+        argv: [kubectl, "--kubeconfig={{ shirone_admin_kubeconfig }}", config, view, --raw, --minify, -o, "jsonpath={.clusters[0].cluster.certificate-authority-data}"]
+      register: shirone_api_ca
+      changed_when: false
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Validate cluster endpoint and embedded CA
+      ansible.builtin.assert:
+        that:
+          - shirone_api_endpoint.stdout == 'https://192.168.86.100:6443'
+          - shirone_api_ca.stdout | length > 0
+        quiet: true
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Create only missing runner state directories
+      ansible.builtin.file:
+        path: "{{ item.item }}"
+        state: directory
+        owner: github-actions
+        group: github-actions
+        mode: '0700'
+      loop: "{{ shirone_runner_directories.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      become: true
+      when: shirone_runner_apply | bool and not ansible_check_mode and not item.stat.exists
+
+    - name: Install the scoped runner kubeconfig without logging it
+      ansible.builtin.copy:
+        dest: "{{ shirone_runner_kubeconfig }}"
+        owner: github-actions
+        group: github-actions
+        mode: '0600'
+        force: false
+        content: "{{ {'apiVersion': 'v1', 'kind': 'Config', 'clusters': [{'name': 'shirone', 'cluster': {'server': 'https://192.168.86.100:6443', 'certificate-authority-data': shirone_api_ca.stdout}}], 'users': [{'name': 'shirone-runner', 'user': {'token': shirone_runner_token.stdout | b64decode}}], 'contexts': [{'name': 'shirone', 'context': {'cluster': 'shirone', 'user': 'shirone-runner', 'namespace': 'mizuki'}}], 'current-context': 'shirone'} | to_nice_yaml }}"
+      become: true
+      no_log: true
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Recheck the created kubeconfig
+      ansible.builtin.stat:
+        path: "{{ shirone_runner_kubeconfig }}"
+        follow: false
+      register: shirone_created_config
+      become: true
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Require private runner ownership
+      ansible.builtin.assert:
+        that:
+          - shirone_created_config.stat.isreg | default(false)
+          - not shirone_created_config.stat.islnk | default(false)
+          - shirone_created_config.stat.pw_name == 'github-actions'
+          - shirone_created_config.stat.mode == '0600'
+        quiet: true
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Verify the kubeconfig has exactly the new scoped identity
+      ansible.builtin.slurp:
+        src: "{{ shirone_runner_kubeconfig }}"
+      register: shirone_created_content
+      become: true
+      no_log: true
+      when: shirone_runner_apply | bool and not ansible_check_mode
+
+    - name: Reject a concurrent or unexpected kubeconfig
+      ansible.builtin.assert:
+        that:
+          - (shirone_created_content.content | b64decode | from_yaml).users | length == 1
+          - (shirone_created_content.content | b64decode | from_yaml).users[0].user.token == (shirone_runner_token.stdout | b64decode)
+          - (shirone_created_content.content | b64decode | from_yaml).clusters[0].cluster.server == 'https://192.168.86.100:6443'
+        quiet: true
+      no_log: true
+      when: shirone_runner_apply | bool and not ansible_check_mode

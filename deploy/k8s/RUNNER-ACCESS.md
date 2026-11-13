@@ -4,8 +4,16 @@
 Role, and RoleBinding for updating the two Shirone Deployments. It permits
 `get`, `list`, `watch`, and `patch` only for `shirone-cms` and `shirone-ssr`.
 The Role does not grant access to Secrets, Pods, other Deployments, or other
-namespaces. Service account token automount is disabled; a separate controlled
-host credential and renewal method are required before a runner can use it.
+namespaces. Service account token automount is disabled. The create-only
+`deploy/ansible/provision-runner-access.yml` candidate explicitly creates a
+dedicated service-account-token Secret and writes a runner-owned 0600
+kubeconfig without logging the token. This is a long-lived token: deleting its
+Secret invalidates it, and access also stops if its RoleBinding is removed.
+Neither the token nor the kubeconfig belongs in Git. The playbook defaults to
+admission checks only, refuses existing names or a destination kubeconfig, and
+requires explicit confirmation before creating anything. If interrupted,
+inspect the exact objects and destination before cleanup; do not blindly retry
+or remove pre-existing objects.
 
 Kubernetes RBAC cannot restrict a `patch` permission to an image field. An
 identity with this Role can change other fields of those two Deployments, and
@@ -20,8 +28,11 @@ equivalent Role using Kubernetes impersonation. The scoped identity got,
 patched, and watched rollouts for both named Deployments; attempts to read
 Secrets or Pods, read another Deployment, create Pods, or patch the production
 namespace were denied. The temporary namespace was removed. This did not issue
-or install runner credentials, modify production workloads, or test registry
-access from the runner.
+or install runner credentials on production, modify production workloads, or
+test registry access from the runner. A second disposable namespace exercised
+the create-only Ansible entrypoint, its generated token and a private temporary
+kubeconfig; synthetic Deployment read/patch succeeded and Secret listing was
+denied. The temporary namespace and credential directory were removed.
 
 The current internal registry uses shared htpasswd authentication and does not
 offer per-repository permissions. A separate username alone would still be able
