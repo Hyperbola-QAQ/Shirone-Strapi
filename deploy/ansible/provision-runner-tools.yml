@@ -24,6 +24,8 @@
               - inventory_hostname == 'hyqaq-imini'
               - shirone_runner_share == '/home/github-actions/.local/share/shirone-release'
               - shirone_runner_ops_source == '/home/hyperbola/Work/ansible-debian-k8s'
+              - lookup('env', 'SHIRONE_WORKSPACE') == '/home/hyperbola/.codex/worktrees/shirone-strapi/Mizuki'
+              - (lookup('file', lookup('env', 'SHIRONE_WORKSPACE') + '/deploy/ci/install-controller-tools.py', rstrip=False) | hash('sha256')) == 'c61d76efaa2b7012e88a327790bc8e5d5d06ca9679cf82ac7adae82cc533467f'
 
         - name: Create only a new private runner directory
           ansible.builtin.command:
@@ -57,7 +59,7 @@
 
         - name: Copy pinned user-space installer
           ansible.builtin.copy:
-            src: "{{ playbook_dir }}/../ci/install-controller-tools.py"
+            src: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/ci/install-controller-tools.py"
             dest: "{{ shirone_runner_share }}/install-controller-tools.py"
             owner: github-actions
             group: github-actions

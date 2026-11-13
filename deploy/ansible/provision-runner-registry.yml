@@ -8,7 +8,7 @@
   vars:
     shirone_registry_runner_apply: false
     shirone_registry_sudo_content: "github-actions ALL=(root) NOPASSWD: NOSETENV: /usr/local/libexec/shirone-registry-copy *\n"
-    shirone_registry_runner_script: "{{ playbook_dir }}/../ci/runner-registry-copy.py"
+    shirone_registry_runner_script: "{{ lookup('env', 'SHIRONE_WORKSPACE') }}/deploy/ci/runner-registry-copy.py"
     shirone_registry_skopeo_version: "1.18.0+ds1-1+b5"
   tasks:
     - name: Report disabled default
@@ -24,7 +24,9 @@
             that:
               - inventory_hostname == 'hyqaq-imini'
               - shirone_registry_skopeo_version == '1.18.0+ds1-1+b5'
-              - shirone_registry_runner_script == playbook_dir + '/../ci/runner-registry-copy.py'
+              - lookup('env', 'SHIRONE_WORKSPACE') == '/home/hyperbola/.codex/worktrees/shirone-strapi/Mizuki'
+              - shirone_registry_runner_script == lookup('env', 'SHIRONE_WORKSPACE') + '/deploy/ci/runner-registry-copy.py'
+              - (lookup('file', shirone_registry_runner_script, rstrip=False) | hash('sha256')) == '5b54f41d5f80d99b1c7d7ce7c01a79190f4df10ca1bc1a0cad494102383f8094'
               - (shirone_registry_sudo_content | hash('sha256')) == '37c8dff035ec419ccba4a814908549eef5f817772007b1f302bf5c155c831c40'
 
         - name: Install pinned registry copy tool
