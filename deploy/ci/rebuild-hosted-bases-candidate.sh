@@ -13,8 +13,6 @@ cd "$root"
 [[ "$(git rev-parse HEAD)" == "$commit" && -z "$(git status --porcelain --untracked-files=all)" ]] || {
   echo 'clean exact source commit required' >&2; exit 1;
 }
-node_parent='docker.m.daocloud.io/library/node@sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2'
-pg_parent='ghcr.m.daocloud.io/cloudnative-pg/postgresql@sha256:e6e1f467b52112f7e08aa380de81473106ff54b1834d90bcb4265a2a018e1921'
 node_tag="shirone-node-base-experiment:${commit:0:12}-$$"
 pg_tag="shirone-pg-base-experiment:${commit:0:12}-$$"
 umask 077
@@ -27,14 +25,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo 'SHIRONE_STAGE=base_pull' >&2
-for image in "$node_parent" "$pg_parent"; do
-  docker pull --platform linux/amd64 "$image" >/dev/null
-  [[ "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" == linux/amd64 ]] || exit 1
-done
-[[ "$(docker image inspect --format '{{.Config.User}}' "$pg_parent")" == 26 ]] || {
-  echo 'unexpected PostgreSQL parent user' >&2; exit 1;
-}
+echo 'SHIRONE_STAGE=base_pull_node' >&2
+node_parent=$(bash deploy/ci/pull-hosted-base.sh node)
+echo 'SHIRONE_STAGE=base_pull_postgres' >&2
+pg_parent=$(bash deploy/ci/pull-hosted-base.sh postgres)
 
 node_archive="$scratch/node.tar.xz"
 echo 'SHIRONE_STAGE=node_download' >&2

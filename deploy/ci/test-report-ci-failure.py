@@ -18,6 +18,14 @@ class ReportTests(unittest.TestCase):
                             'SHIRONE_STAGE=private-token-should-never-be-printed\n')
             self.assertEqual(report_ci.report(path), {'stage': 'oci_cms', 'categories': ['network_connection']})
 
+    def test_base_stages_identify_only_fixed_components(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'private.log'
+            for stage in ('base_pull_node', 'base_pull_postgres'):
+                with self.subTest(stage=stage):
+                    path.write_text('SHIRONE_STAGE=' + stage + '\nprivate data\n')
+                    self.assertEqual(report_ci.report(path), {'stage': stage, 'categories': ['unclassified']})
+
     def test_unknown_is_safe(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / 'private.log'

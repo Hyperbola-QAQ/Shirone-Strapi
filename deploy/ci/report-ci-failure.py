@@ -3,7 +3,7 @@
 import json
 import sys
 
-STAGES = frozenset(('bases', 'base_pull', 'node_download', 'node_base_build',
+STAGES = frozenset(('bases', 'base_pull', 'base_pull_node', 'base_pull_postgres', 'node_download', 'node_base_build',
                     'pg_base_build', 'base_checks', 'meili_pull',
                     'dependency_install', 'source_tests', 'oci_cms', 'oci_ssr',
                     'oci_reconciler', 'integration_content', 'integration_media',
