@@ -29,6 +29,14 @@ echo 'SHIRONE_STAGE=base_pull_node' >&2
 node_parent=$(bash deploy/ci/pull-hosted-base.sh node)
 echo 'SHIRONE_STAGE=base_pull_postgres' >&2
 pg_parent=$(bash deploy/ci/pull-hosted-base.sh postgres)
+case "$node_parent" in
+  docker.m.daocloud.io/library/node@sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2|docker.io/library/node@sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2) ;;
+  *) echo 'invalid selected Node parent' >&2; exit 1 ;;
+esac
+case "$pg_parent" in
+  ghcr.m.daocloud.io/cloudnative-pg/postgresql@sha256:e6e1f467b52112f7e08aa380de81473106ff54b1834d90bcb4265a2a018e1921|ghcr.io/cloudnative-pg/postgresql@sha256:e6e1f467b52112f7e08aa380de81473106ff54b1834d90bcb4265a2a018e1921) ;;
+  *) echo 'invalid selected PostgreSQL parent' >&2; exit 1 ;;
+esac
 
 node_archive="$scratch/node.tar.xz"
 echo 'SHIRONE_STAGE=node_download' >&2
@@ -50,14 +58,14 @@ if [[ "${SHIRONE_OCI_BASE_CONTEXT:-}" == yes ]]; then
   # A docker-container builder cannot resolve a tag from the host image store.
   # Export the actual tested base to OCI, validate it, and load the same bytes
   # into Docker only for the version/trust-store checks below.
-  docker buildx build --platform linux/amd64 --provenance=false --network=none \
+  docker buildx build --platform linux/amd64 --provenance=false --network=none --build-arg "BASE_IMAGE=$node_parent" \
     -f deploy/ci/Dockerfile.node-reconstruction-candidate -t "$node_tag" \
     --output "type=oci,dest=$output/node-base.oci.tar" "$scratch/node-context" >/dev/null
   python3 deploy/ci/verify-oci-archive-candidate.py "$output/node-base.oci.tar" > "$output/node-base.identity.json"
   node_base_manifest=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["manifest_digest"])' "$output/node-base.identity.json")
   docker load --input "$output/node-base.oci.tar" >/dev/null
 else
-  docker build --network=none --pull=false -f deploy/ci/Dockerfile.node-reconstruction-candidate -t "$node_tag" "$scratch/node-context" >/dev/null
+  docker build --network=none --pull=false --build-arg "BASE_IMAGE=$node_parent" -f deploy/ci/Dockerfile.node-reconstruction-candidate -t "$node_tag" "$scratch/node-context" >/dev/null
 fi
 
 echo 'SHIRONE_STAGE=pg_base_build' >&2
@@ -72,7 +80,8 @@ r=json.load(open(sys.argv[1]))
 assert len(r['changed']) == 4 and len(r['deleted']) == 6 and r['denied_occurrences_removed'] == 8
 PY
 cat > "$scratch/pg-context/Dockerfile" <<'EOF'
-FROM ghcr.m.daocloud.io/cloudnative-pg/postgresql@sha256:e6e1f467b52112f7e08aa380de81473106ff54b1834d90bcb4265a2a018e1921
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
 USER 0
 COPY ca-files.tar apply-ca-overlay.sh /tmp/
 RUN sh /tmp/apply-ca-overlay.sh
@@ -81,9 +90,9 @@ EOF
 if [[ "${SHIRONE_OCI_BASE_CONTEXT:-}" == yes ]]; then
   # The container driver otherwise leaves the result only in its own cache;
   # the following runtime checks and integration tests use the Docker store.
-  docker buildx build --network=none --pull=false --load -t "$pg_tag" "$scratch/pg-context" >/dev/null
+  docker buildx build --network=none --pull=false --load --build-arg "BASE_IMAGE=$pg_parent" -t "$pg_tag" "$scratch/pg-context" >/dev/null
 else
-  docker build --network=none --pull=false -t "$pg_tag" "$scratch/pg-context" >/dev/null
+  docker build --network=none --pull=false --build-arg "BASE_IMAGE=$pg_parent" -t "$pg_tag" "$scratch/pg-context" >/dev/null
 fi
 
 echo 'SHIRONE_STAGE=base_checks' >&2
