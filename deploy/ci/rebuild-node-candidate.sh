@@ -28,6 +28,6 @@ fi
 parent='docker.m.daocloud.io/library/node@sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2'
 docker image inspect "$parent" >/dev/null || { echo 'Preverified parent image is unavailable locally' >&2; exit 1; }
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-docker build --network=none --pull=false --file "$script_dir/Dockerfile.node-reconstruction-candidate" \
+docker build --network=none --pull=false --build-arg "BASE_IMAGE=$parent" --file "$script_dir/Dockerfile.node-reconstruction-candidate" \
   --tag shirone-node-reconstruction:local-candidate "$scratch"
 echo 'Local candidate only: CA remediation, equivalence and release eligibility are unverified.'

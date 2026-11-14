@@ -43,5 +43,27 @@ class BaseSelectionTests(unittest.TestCase):
         self.assertIn('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}', script)
 
 
+    def test_local_node_build_passes_preverified_parent(self):
+        lines = iter((ROOT / 'rebuild-node-candidate.sh').read_text().splitlines())
+        command = None
+        for line in lines:
+            if line.strip().startswith('docker build '):
+                command = line.strip()
+                while command.endswith('\\'):
+                    command = command[:-1] + next(lines).strip()
+                break
+        self.assertIsNotNone(command)
+        with tempfile.TemporaryDirectory() as td:
+            fake = Path(td) / 'docker'
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_OUTPUT"\n')
+            fake.chmod(0o700)
+            output = Path(td) / 'args'
+            parent = 'docker.m.daocloud.io/library/node@sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2'
+            env = dict(os.environ, PATH=td + ':' + os.environ['PATH'], TEST_OUTPUT=str(output),
+                       parent=parent, script_dir=str(ROOT), scratch=td)
+            subprocess.run(['bash', '-c', command], env=env, check=True)
+            self.assertIn('BASE_IMAGE=' + parent, output.read_text().splitlines())
+
+
 if __name__ == '__main__':
     unittest.main()
